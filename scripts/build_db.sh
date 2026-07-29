@@ -11,7 +11,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
-cd "$REPO_ROOT/backend"
+# Run from the repo root so the relative RAW_DATA_DIR (data/raw) and
+# DATABASE_PATH (data/books.db) resolve to the locations Docker also mounts.
+# The `app` package lives under backend/, so expose it via PYTHONPATH instead
+# of cd-ing into backend/ (which would break those data paths).
+cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT/backend${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ ! -f "$REPO_ROOT/.env" ]; then
     echo "ERROR: .env not found. Copy env.example → .env and fill in credentials."
@@ -24,7 +29,7 @@ source "$REPO_ROOT/.env"
 set +a
 
 echo "==> Installing dependencies..."
-pip install -q -r requirements.txt
+pip install -q -r backend/requirements.txt
 
 echo "==> Running ingestion..."
 python -m app.ingest

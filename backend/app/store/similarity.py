@@ -8,6 +8,21 @@ from app.models import Chunk, PassagePair
 from app.store.base import ChunkStore
 
 
+# Two chunks in the same chapter whose text windows start within this many
+# characters are treated as the "same passage" for de-duplication purposes
+# (chunks target ~600 tokens ≈ a few thousand chars, so this catches the
+# overlapping-slice case without merging genuinely distinct scenes).
+_SAME_PASSAGE_CHAR_GAP = 1500
+
+
+def _same_region(a: dict, b: dict) -> bool:
+    """True if two chunk dicts point at overlapping text in the same chapter."""
+    return (
+        a["chapter_id"] == b["chapter_id"]
+        and abs(a["char_start"] - b["char_start"]) < _SAME_PASSAGE_CHAR_GAP
+    )
+
+
 def find_cross_book_pairs(
     store: ChunkStore,
     book_id_a: int,
@@ -16,8 +31,10 @@ def find_cross_book_pairs(
 ) -> list[PassagePair]:
     """Compute all-pairs cosine similarity between two books' chunks.
 
-    Uses the matrix product  A @ B.T  on L2-normalised embeddings,
-    then picks the top-k highest similarities.
+    Uses the matrix product  A @ B.T  on L2-normalised embeddings, then walks
+    candidates in descending similarity and greedily de-duplicates so the
+    returned pairs don't repeat the same passage: a candidate is skipped when
+    either of its chunks overlaps a chunk already accepted on the same side.
     """
     ids_a, mat_a = store.all_embeddings(book_id_a)
     ids_b, mat_b = store.all_embeddings(book_id_b)
@@ -37,24 +54,35 @@ def find_cross_book_pairs(
     # Cosine similarity matrix  (|A| x |B|)
     sim = mat_a @ mat_b.T
 
-    # Flatten and pick top-k indices
+    # Over-select a candidate pool, then dedup down to top_k.  We need more than
+    # top_k because near-duplicate slices are pruned during selection.
     flat = sim.ravel()
-    # argpartition is O(n) vs O(n log n) for full sort
-    if top_k < len(flat):
-        top_flat_idx = np.argpartition(flat, -top_k)[-top_k:]
-    else:
-        top_flat_idx = np.arange(len(flat))
-    # Sort the selected indices by score descending
-    top_flat_idx = top_flat_idx[np.argsort(flat[top_flat_idx])[::-1]]
+    pool = min(len(flat), max(top_k * 10, top_k))
+    cand_idx = np.argpartition(flat, -pool)[-pool:]
+    cand_idx = cand_idx[np.argsort(flat[cand_idx])[::-1]]
 
     pairs: list[PassagePair] = []
-    for idx in top_flat_idx:
+    accepted_a: list[dict] = []
+    accepted_b: list[dict] = []
+
+    for idx in cand_idx:
+        if len(pairs) >= top_k:
+            break
         i = int(idx // len(ids_b))
         j = int(idx % len(ids_b))
         chunk_a_data = store.get(ids_a[i])
         chunk_b_data = store.get(ids_b[j])
         if chunk_a_data is None or chunk_b_data is None:
             continue
+
+        # Skip redundant slices of an already-selected passage on either side.
+        if any(_same_region(chunk_a_data, a) for a in accepted_a) or any(
+            _same_region(chunk_b_data, b) for b in accepted_b
+        ):
+            continue
+        accepted_a.append(chunk_a_data)
+        accepted_b.append(chunk_b_data)
+
         pairs.append(
             PassagePair(
                 chunk_a=Chunk(

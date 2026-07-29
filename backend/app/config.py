@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # ---- Agent ----
     agent_max_rounds: int = 5
     context_budget_chars: int = 12_000
+    # Sampling temperature.  Left unset by default: the provided gpt-5.1-chat
+    # deployment only accepts the model default (1) and 400s on any other
+    # value, so we omit the parameter entirely unless a deployment that
+    # supports it is configured.
+    chat_temperature: float | None = None
 
 
 def get_settings() -> Settings:

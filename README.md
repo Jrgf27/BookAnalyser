@@ -21,12 +21,13 @@ cp env.example .env
 # Edit .env with your Azure OpenAI credentials
 
 # 2. Build the database (one-time, ~5 min)
-cd backend
-pip install -r requirements.txt
-python -m app.ingest
+# Run from the repo root — data/raw and data/books.db are resolved relative to
+# the current directory, and must match the paths Docker mounts.
+pip install -r backend/requirements.txt
+PYTHONPATH=backend python -m app.ingest
+# (or simply: ./scripts/build_db.sh)
 
 # 3. Run with Docker
-cd ..
 docker compose up --build
 ```
 
@@ -56,12 +57,34 @@ book-assistant/
 - **Single SQLite file** — no database server, ships as one artifact
 - **Hybrid retrieval** — FTS5 BM25 + sqlite-vec cosine KNN, fused with RRF (k=60)
 - **Chunking** — ~600 tokens, ~15% overlap, paragraph-aligned, chapter-bounded
-- **Citation contract** — agent emits `[book:chapter:chunk]` markers; frontend renders as chips
+- **Robust chapter parsing** — the two Gutenberg editions differ (roman-numeral
+  headings vs. `CHAPTER N` markers, some prefixed with illustration captions or
+  run together as `CHAPTERXXVII`); the parser detects the marker anywhere in the
+  heading so both books read as fully contiguous chapters (LW 1–47, P&P 1–61)
+- **Validated citations** — the agent emits `[book:chapter:chunk]` markers, but
+  the loop tracks the chunk ids actually returned by tools and strips any marker
+  the model invents, so the UI never renders a chip for an unseen passage
+- **De-duplicated cross-book pairs** — similarity search greedily skips
+  overlapping slices of the same passage on either side
+- **Temperature omitted by default** — `gpt-5.1-chat` only accepts the model
+  default (1) and 400s on any other value, so no `temperature` is sent unless
+  `CHAT_TEMPERATURE` is set for a deployment that supports it
+- **No CORS middleware** — the browser only talks to the frontend origin and
+  both the dev server and nginx build proxy `/api` to the backend, so requests
+  are same-origin; CORS would be dead code
 - **Idempotent ingestion** — drop-and-rebuild; the DB is a cache, not a source of truth
 
 ## Evaluation
 
 ```bash
-cd eval
-python run.py          # retrieval hit-rate @k, no LLM needed
+# Retrieval hit-rate @k (needs only the embedding model)
+python eval/run.py
+
+# End-to-end citation faithfulness: asks the agent, then checks every cited
+# chunk exists, matches its marker's book/chapter, and lands in an expected
+# chapter (needs the chat model + a built DB)
+python eval/run.py --mode faithfulness
 ```
+
+Golden-question `expected_chapters` were verified against the parsed chapter
+texts (e.g. Beth's death → LW ch.40, Darcy's first proposal → P&P ch.34).

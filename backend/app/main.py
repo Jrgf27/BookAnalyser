@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.store.sqlite_store import SqliteChunkStore
@@ -28,12 +27,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware: the browser only ever talks to the frontend origin, and
+# both the Vite dev server and the nginx build proxy /api to the backend, so
+# requests are same-origin. Add CORSMiddleware only if the API is exposed to a
+# browser on a different origin.
 
 app.include_router(books.router)
 app.include_router(chunks.router)

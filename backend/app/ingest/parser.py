@@ -53,6 +53,40 @@ def roman_to_int(s: str) -> int:
     return total
 
 
+# Matches an explicit "CHAPTER <roman>" marker anywhere in a heading.  The space
+# is optional because some headings run the two together ("CHAPTERXXVII."); the
+# ``\b`` after the numeral prevents matching a title word that merely starts with
+# a roman letter (e.g. "CHAPTERIndex").
+_CHAPTER_KW_RE = re.compile(r"\bCHAPTER\s*([IVXLCDM]+)\b\.?\s*(.*)$", re.IGNORECASE)
+# Matches a heading that *is* a roman numeral followed by a period, e.g.
+# "IX. The Laurence Boy." — the trailing period guards against words that merely
+# start with a roman letter ("Illustrations", "Contents").
+_ROMAN_LEAD_RE = re.compile(r"^([IVXLCDM]+)\.\s*(.*)$")
+
+
+def _match_chapter_heading(text: str) -> tuple[int, str] | None:
+    """Extract ``(chapter_number, title)`` from a heading, or ``None``.
+
+    Handles two conventions seen in the dataset:
+
+    * *Little Women* — the heading is ``"IX. The Laurence Boy."`` (roman first).
+    * *Pride & Prejudice* — some headings carry an illustration caption *before*
+      the marker, e.g. ``"I hope Mr. Bingley will like it. CHAPTER II."``.  We
+      therefore look for the last ``CHAPTER <roman>`` in the string rather than
+      only anchoring at the start.
+    """
+    kw = list(_CHAPTER_KW_RE.finditer(text))
+    if kw:
+        m = kw[-1]  # prefer the real marker, past any caption prefix
+        return roman_to_int(m.group(1)), m.group(2).strip()
+
+    m = _ROMAN_LEAD_RE.match(text)
+    if m:
+        return roman_to_int(m.group(1)), m.group(2).strip()
+
+    return None
+
+
 class GutenbergParser:
     """Parse a Project Gutenberg HTML file into a list of chapter dicts.
 
@@ -68,6 +102,12 @@ class GutenbergParser:
         for sel in ("#pg-header", "#pg-footer", ".pg-header", ".pg-footer"):
             for el in soup.select(sel):
                 el.decompose()
+
+        # Strip inline page-number markers (e.g. <span class="pagenum">{4}</span>),
+        # which otherwise leak mid-sentence into chapter text — "no new {4}
+        # comers" — polluting chunks, embeddings, and the citation drawer.
+        for el in soup.select("span.pagenum, .pagenum"):
+            el.decompose()
 
         # Unwrap drop-cap spans (some editions use <span class="letra">)
         for span in soup.select("span.letra"):
@@ -101,16 +141,10 @@ class GutenbergParser:
 
         for h in headings:
             text = h.get_text(" ", strip=True)
-            # Try to match "CHAPTER IX" or just "IX" or "Chapter IX. Title"
-            m = re.match(
-                r"(?:CHAPTER\s+)?([IVXLCDM]+)(?:\.\s*(.*))?$",
-                text,
-                re.IGNORECASE,
-            )
-            if m:
-                num = roman_to_int(m.group(1))
-                title = (m.group(2) or "").strip() or f"Chapter {num}"
-                chapter_headings.append((num, h, title))
+            match = _match_chapter_heading(text)
+            if match:
+                num, title = match
+                chapter_headings.append((num, h, title or f"Chapter {num}"))
 
         if not chapter_headings:
             logger.warning("No chapter headings found for %s", book_key)

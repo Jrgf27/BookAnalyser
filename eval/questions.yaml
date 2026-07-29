@@ -1,6 +1,12 @@
-# Golden questions for retrieval evaluation.
+# Golden questions for evaluation (used by both eval modes in run.py).
 # Each entry has a natural-language query and the expected chunk IDs (or
-# chapter numbers) that a correct retrieval should surface.
+# chapter numbers) that a correct retrieval / citation should surface.
+#
+# expected_chapters were verified against the parsed chapter texts (LW 1..47,
+# P&P 1..61) — e.g. Beth's death is LW ch.40 "The Valley of the Shadow",
+# Mr. Collins proposes in P&P ch.19, Darcy's first proposal is P&P ch.34.
+# These numbers only line up once the parser reads all P&P chapters
+# contiguously; re-verify after a fresh ingestion if the parser changes.
 #
 # Chunk IDs are populated after the first successful ingestion run.
 # Until then, use chapter_numbers as a coarser ground-truth signal.

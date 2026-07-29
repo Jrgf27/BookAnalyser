@@ -27,6 +27,33 @@ def _parse_citations(text: str) -> list[Citation]:
     ]
 
 
+def _drop_unsupported_citations(
+    text: str, surfaced_ids: set[int]
+) -> tuple[str, list[Citation]]:
+    """Remove citation markers whose chunk id was never returned by a tool.
+
+    The system prompt forbids fabricated citations, but nothing stops the model
+    from emitting one anyway.  We strip such markers from the answer so the UI
+    never renders a chip that points at a passage the model never actually saw,
+    and return only the validated citations.
+    """
+    dropped = 0
+
+    def _keep(m: "re.Match[str]") -> str:
+        nonlocal dropped
+        if int(m.group(3)) in surfaced_ids:
+            return m.group(0)
+        dropped += 1
+        return ""
+
+    cleaned = _CITE_RE.sub(_keep, text)
+    if dropped:
+        logger.warning("Dropped %d unsupported citation marker(s)", dropped)
+    # Tidy any double spaces left where a marker was removed
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned, _parse_citations(cleaned)
+
+
 async def run_agent(
     user_message: str,
     store: SqliteChunkStore,
@@ -40,10 +67,30 @@ async def run_agent(
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
     ]
 
+    # If the user scoped the conversation to one book, tell the model (so it
+    # cites the right book and won't reach for the other) and enforce it in the
+    # tool layer via scope_book_id below.
+    if book_id is not None:
+        row = store.conn.execute(
+            "SELECT title, key FROM books WHERE id = ?", (book_id,)
+        ).fetchone()
+        if row is not None:
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"The user has restricted this conversation to '{row['title']}' "
+                    f"(book_id={book_id}, book_key={row['key']}). Only use information "
+                    f"from this book, and pass book_id={book_id} to search/get_outline. "
+                    f"Do not reference the other book."
+                ),
+            })
+
+    messages.append({"role": "user", "content": user_message})
+
     trace: list[ToolCall] = []
+    surfaced_ids: set[int] = set()
 
     for round_num in range(max_rounds):
         logger.info("Agent round %d/%d", round_num + 1, max_rounds)
@@ -59,7 +106,7 @@ async def run_agent(
         # If the model is done (no tool calls), return the answer
         if choice.finish_reason == "stop" or not choice.message.tool_calls:
             answer = choice.message.content or ""
-            citations = _parse_citations(answer)
+            answer, citations = _drop_unsupported_citations(answer, surfaced_ids)
             return ChatResponse(answer=answer, citations=citations, trace=trace)
 
         # Process each tool call
@@ -70,9 +117,10 @@ async def run_agent(
             fn_args = json.loads(tc.function.arguments)
             logger.info("Tool call: %s(%s)", fn_name, fn_args)
 
-            result_str = await dispatch_tool(
-                fn_name, fn_args, store, settings, budget=budget
+            result_str, ids = await dispatch_tool(
+                fn_name, fn_args, store, settings, budget=budget, scope_book_id=book_id
             )
+            surfaced_ids |= ids
 
             trace.append(ToolCall(
                 tool=fn_name,
@@ -93,5 +141,5 @@ async def run_agent(
     })
     response = await chat_completion(messages=messages, tools=None, settings=settings)
     answer = response.choices[0].message.content or ""
-    citations = _parse_citations(answer)
+    answer, citations = _drop_unsupported_citations(answer, surfaced_ids)
     return ChatResponse(answer=answer, citations=citations, trace=trace)

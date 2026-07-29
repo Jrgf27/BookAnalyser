@@ -28,7 +28,12 @@ class SqliteChunkStore:
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False: the connection is created once at app
+        # startup (event-loop thread) but FastAPI runs sync endpoints in a
+        # worker threadpool, so it must be usable from other threads.  SQLite's
+        # default serialized threading mode makes shared use safe for our
+        # read-mostly workload.
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -247,22 +252,26 @@ class SqliteChunkStore:
 
         result = dict(row)
         if window > 0:
-            # Expand context: find adjacent chunks in the same chapter
-            neighbors = self.conn.execute(
+            # Expand context by walking neighbouring chunks in *reading order*
+            # (char_start), not by chunk-id arithmetic.  Chunk ids are a global
+            # autoincrement, so ±window in id space is not guaranteed to map to
+            # adjacent passages; ordering by char_start within the chapter is.
+            ordered = self.conn.execute(
                 """
-                SELECT char_start, char_end FROM chunks
-                WHERE chapter_id = ? AND id BETWEEN ? AND ?
+                SELECT id, char_start, char_end FROM chunks
+                WHERE chapter_id = ?
                 ORDER BY char_start
                 """,
-                (
-                    row["chapter_id"],
-                    chunk_id - window,
-                    chunk_id + window,
-                ),
+                (row["chapter_id"],),
             ).fetchall()
-            if neighbors:
-                ctx_start = min(n["char_start"] for n in neighbors)
-                ctx_end = max(n["char_end"] for n in neighbors)
+            positions = [r["id"] for r in ordered]
+            if chunk_id in positions:
+                idx = positions.index(chunk_id)
+                lo = max(0, idx - window)
+                hi = min(len(ordered), idx + window + 1)
+                span = ordered[lo:hi]
+                ctx_start = min(n["char_start"] for n in span)
+                ctx_end = max(n["char_end"] for n in span)
                 result["context"] = row["chapter_text"][ctx_start:ctx_end]
                 result["context_char_start"] = ctx_start
                 result["context_char_end"] = ctx_end

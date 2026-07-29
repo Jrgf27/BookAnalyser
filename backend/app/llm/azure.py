@@ -48,15 +48,23 @@ async def chat_completion(
     *,
     settings: Settings,
     tools: list[dict[str, Any]] | None = None,
-    temperature: float = 0.3,
+    temperature: float | None = None,
 ) -> Any:
-    """Send a chat completion request, with optional tool definitions."""
+    """Send a chat completion request, with optional tool definitions.
+
+    ``temperature`` falls back to ``settings.chat_temperature``.  When the
+    resolved value is ``None`` the parameter is omitted so the model uses its
+    default — required for deployments like gpt-5.1-chat that reject any
+    non-default temperature.
+    """
     client = _get_chat_client(settings)
     kwargs: dict[str, Any] = {
         "model": settings.azure_chat_deployment,
         "messages": messages,
-        "temperature": temperature,
     }
+    temp = settings.chat_temperature if temperature is None else temperature
+    if temp is not None:
+        kwargs["temperature"] = temp
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
@@ -127,6 +135,7 @@ async def summarize_text(
             {"role": "user", "content": text},
         ],
         settings=settings,
-        temperature=0.2,
+        # No explicit temperature — see chat_completion; the default deployment
+        # rejects non-default values.
     )
     return resp.choices[0].message.content or ""

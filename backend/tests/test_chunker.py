@@ -31,23 +31,23 @@ class TestChunker:
         assert len(chunks) > 1
 
     def test_overlap_exists(self) -> None:
-        # With overlap, consecutive chunks should share some text.
-        # Use a common sentence repeated so each paragraph is identical —
-        # the overlap mechanism keeps trailing paragraphs from the previous
-        # chunk, so the same text should appear in both.
-        paras = ["The quick brown fox jumps over the lazy dog. " * 15 for _ in range(10)]
+        # Paragraphs must be small enough that at least one fits inside the
+        # overlap budget, otherwise there is genuinely nothing to carry over.
+        # Here each paragraph is ~6 tokens, target 30, overlap 0.5 → ~2
+        # paragraphs of real overlap between consecutive chunks.
+        paras = [f"Sentence number {i} appears right here." for i in range(30)]
         text = "\n\n".join(paras)
         chunks = chunk_chapter(
-            text, chapter_number=1, target_tokens=100, overlap_fraction=0.3
+            text, chapter_number=1, target_tokens=30, overlap_fraction=0.5
         )
         assert len(chunks) >= 2, "Expected at least 2 chunks"
-        # The last paragraph(s) of chunk 0 should appear at the start of chunk 1
+        # Genuine overlap: chunk 1 starts before chunk 0 ends (char ranges),
+        # and the two chunks share at least one paragraph of text.
         chunk0_end = chunks[0]["char_end"]
         chunk1_start = chunks[1]["char_start"]
-        assert chunk1_start < chunk0_end, (
-            f"Expected overlap: chunk0 ends at {chunk0_end}, "
-            f"chunk1 starts at {chunk1_start}"
-        )
+        assert chunk1_start < chunk0_end
+        shared = {p for p in paras if p in chunks[0]["text"] and p in chunks[1]["text"]}
+        assert shared, "Expected consecutive chunks to share paragraph text"
 
     def test_char_offsets_valid(self) -> None:
         text = "Para one.\n\nPara two.\n\nPara three."
@@ -56,6 +56,26 @@ class TestChunker:
             assert c["char_start"] >= 0
             assert c["char_end"] <= len(text)
             assert c["char_start"] < c["char_end"]
+
+    def test_char_offsets_correct_with_repeated_paragraphs(self) -> None:
+        # Regression: identical repeated paragraphs used to all resolve to the
+        # first occurrence's offset (str.find from 0).  Offsets must be
+        # monotonic and each chunk's span must actually contain its own text.
+        unit = "she said quietly to herself in the dark"
+        text = "\n\n".join([unit] * 12)
+        chunks = chunk_chapter(
+            text, chapter_number=1, target_tokens=40, overlap_fraction=0.15
+        )
+        assert len(chunks) > 1
+        prev_start = -1
+        for c in chunks:
+            # char_start advances (allowing equal only is not expected here)
+            assert c["char_start"] > prev_start
+            prev_start = c["char_start"]
+            # The declared span is wide enough to hold the chunk's text and the
+            # first unit of the chunk really is at char_start.
+            assert c["char_end"] - c["char_start"] >= len(unit)
+            assert text[c["char_start"]:].startswith(unit)
 
     def test_empty_input(self) -> None:
         chunks = chunk_chapter("", chapter_number=1)

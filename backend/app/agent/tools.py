@@ -113,8 +113,19 @@ async def dispatch_tool(
     settings: Settings,
     *,
     budget: int,
-) -> str:
-    """Execute a tool call and return a JSON-ish string result, truncated to budget."""
+    scope_book_id: int | None = None,
+) -> tuple[str, set[int]]:
+    """Execute a tool call.
+
+    Returns ``(result_text, surfaced_chunk_ids)`` where ``result_text`` is the
+    JSON result truncated to ``budget`` and ``surfaced_chunk_ids`` is the set of
+    chunk ids actually returned to the model — the loop uses this to reject
+    citations the model may hallucinate.
+
+    ``scope_book_id`` pins retrieval to a single book when the user has selected
+    one in the UI; it overrides the book for ``search``/``get_outline`` so the
+    scope is enforced even if the model omits or guesses a book id.
+    """
     import json
 
     result: Any
@@ -126,20 +137,22 @@ async def dispatch_tool(
         result = [dict(r) for r in rows]
 
     elif name == "get_outline":
+        book_id = scope_book_id if scope_book_id is not None else args["book_id"]
         rows = store.conn.execute(
             "SELECT number, title, summary, word_count FROM chapters "
             "WHERE book_id = ? ORDER BY number",
-            (args["book_id"],),
+            (book_id,),
         ).fetchall()
         result = [dict(r) for r in rows]
 
     elif name == "search":
         query_vec = await get_embedding(args["query"], settings)
         k = args.get("k", 6)
+        book_id = scope_book_id if scope_book_id is not None else args.get("book_id")
         rows = store.search(
             query_vec,
             query_text=args["query"],
-            book_id=args.get("book_id"),
+            book_id=book_id,
             k=k,
         )
         # Attach book_key for citation
@@ -175,7 +188,25 @@ async def dispatch_tool(
     else:
         result = {"error": f"Unknown tool: {name}"}
 
+    surfaced_ids = _collect_chunk_ids(name, result)
+
     text = json.dumps(result, ensure_ascii=False, default=str)
     if len(text) > budget:
         text = text[:budget] + "…[truncated]"
-    return text
+    return text, surfaced_ids
+
+
+def _collect_chunk_ids(name: str, result: Any) -> set[int]:
+    """Extract chunk ids a tool exposed to the model, keyed by tool shape."""
+    ids: set[int] = set()
+    if name == "search" and isinstance(result, list):
+        ids = {r["chunk_id"] for r in result if "chunk_id" in r}
+    elif name == "get_context" and isinstance(result, dict) and "id" in result:
+        ids = {result["id"]}
+    elif name == "find_similar_passages" and isinstance(result, list):
+        for pair in result:
+            for side in ("chunk_a", "chunk_b"):
+                chunk = pair.get(side) if isinstance(pair, dict) else None
+                if isinstance(chunk, dict) and "id" in chunk:
+                    ids.add(chunk["id"])
+    return ids

@@ -1,21 +1,32 @@
-"""Retrieval evaluation harness.
+"""Evaluation harness.
 
-Measures hit-rate @k against the /search endpoint.
-No LLM needed — only the embedding model for query vectorization.
+Two modes:
+
+* ``retrieval`` (default) — hit-rate @k against ``/search``.  Needs only the
+  embedding model, so it's cheap and deterministic.
+* ``faithfulness`` — end-to-end check against ``/chat``.  For each question it
+  asks the agent, parses the inline citations, and verifies that every cited
+  chunk actually exists, resolves to the expected book, and lands in an expected
+  chapter.  This catches hallucinated or misgrounded citations that a pure
+  retrieval metric can't see.
 
 Usage:
-    python eval/run.py                    # defaults: k=10, base_url=localhost:8000
-    python eval/run.py --k 5 --base-url http://localhost:8000
+    python eval/run.py                                  # retrieval, k=10
+    python eval/run.py --k 5
+    python eval/run.py --mode faithfulness              # end-to-end, needs LLM
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
+import re
 from pathlib import Path
 
 import httpx
 import yaml
+
+# Inline citation markers like [pp:34:1207]
+_CITE_RE = re.compile(r"\[([a-z]+):(\d+):(\d+)\]")
 
 
 def load_questions(path: Path) -> list[dict]:
@@ -23,37 +34,30 @@ def load_questions(path: Path) -> list[dict]:
         return yaml.safe_load(f)
 
 
-def evaluate(
-    questions: list[dict],
-    base_url: str,
-    k: int,
-) -> None:
-    client = httpx.Client(base_url=base_url, timeout=30)
+def _resolve_book_id(client: httpx.Client, book_key: str | None) -> int | None:
+    if not book_key:
+        return None
+    for b in client.get("/books").json():
+        if b.get("key") == book_key or b["title"].lower().startswith(book_key):
+            return b["id"]
+    return None
 
-    total = 0
-    chapter_hits = 0
-    chunk_hits = 0
+
+# --------------------------------------------------------------------------- #
+# Retrieval mode
+# --------------------------------------------------------------------------- #
+
+def evaluate_retrieval(questions: list[dict], base_url: str, k: int) -> None:
+    client = httpx.Client(base_url=base_url, timeout=30)
+    total = chapter_hits = chunk_hits = 0
 
     for q in questions:
         query = q["query"]
-        book_key = q.get("book_key")
         expected_chapters = set(q.get("expected_chapters") or [])
         expected_chunks = set(q.get("expected_chunk_ids") or [])
+        book_id = _resolve_book_id(client, q.get("book_key"))
 
-        # Resolve book_id from book_key
-        book_id = None
-        if book_key:
-            books = client.get("/books").json()
-            for b in books:
-                if b.get("key") == book_key or b["title"].lower().startswith(book_key):
-                    book_id = b["id"]
-                    break
-
-        # Search
-        resp = client.post(
-            "/search",
-            json={"query": query, "book_id": book_id, "k": k},
-        )
+        resp = client.post("/search", json={"query": query, "book_id": book_id, "k": k})
         if resp.status_code != 200:
             print(f"  SKIP  {query!r} — HTTP {resp.status_code}")
             continue
@@ -62,19 +66,13 @@ def evaluate(
         returned_chapters = {r["chapter_number"] for r in results}
         returned_chunks = {r["id"] for r in results}
 
-        # Chapter-level hit rate
         ch_hit = bool(expected_chapters & returned_chapters) if expected_chapters else True
-        # Chunk-level hit rate (only if ground truth is populated)
         ck_hit = bool(expected_chunks & returned_chunks) if expected_chunks else True
 
         total += 1
-        if ch_hit:
-            chapter_hits += 1
-        if ck_hit:
-            chunk_hits += 1
-
-        status = "HIT" if ch_hit else "MISS"
-        print(f"  {status:4s}  ch={returned_chapters}  q={query!r}")
+        chapter_hits += ch_hit
+        chunk_hits += ck_hit
+        print(f"  {'HIT' if ch_hit else 'MISS':4s}  ch={sorted(returned_chapters)}  q={query!r}")
 
     print(f"\n{'='*60}")
     print(f"Chapter hit-rate @{k}: {chapter_hits}/{total} = {chapter_hits/max(total,1):.1%}")
@@ -82,16 +80,89 @@ def evaluate(
         print(f"Chunk   hit-rate @{k}: {chunk_hits}/{total} = {chunk_hits/max(total,1):.1%}")
 
 
+# --------------------------------------------------------------------------- #
+# Faithfulness mode
+# --------------------------------------------------------------------------- #
+
+def evaluate_faithfulness(questions: list[dict], base_url: str) -> None:
+    client = httpx.Client(base_url=base_url, timeout=120)
+
+    total = 0
+    with_citation = 0
+    all_valid = 0          # every citation resolves to a real chunk
+    chapter_grounded = 0   # >=1 citation lands in an expected chapter
+
+    for q in questions:
+        query = q["query"]
+        expected_book = q.get("book_key")
+        expected_chapters = set(q.get("expected_chapters") or [])
+        book_id = _resolve_book_id(client, expected_book)
+
+        resp = client.post("/chat", json={"message": query, "book_id": book_id})
+        if resp.status_code != 200:
+            print(f"  SKIP  {query!r} — HTTP {resp.status_code}")
+            continue
+
+        total += 1
+        answer = resp.json().get("answer", "")
+        cites = _CITE_RE.findall(answer)  # list of (book_key, chapter, chunk_id)
+
+        if not cites:
+            print(f"  NOCITE  q={query!r}")
+            continue
+        with_citation += 1
+
+        # Resolve each cited chunk and check it exists + matches the marker.
+        valid = True
+        cited_chapters: set[int] = set()
+        for book_key, chapter_str, chunk_str in cites:
+            chunk_id = int(chunk_str)
+            r = client.get(f"/chunks/{chunk_id}")
+            if r.status_code != 200:
+                valid = False
+                continue
+            chunk = r.json()
+            cited_chapters.add(chunk["chapter_number"])
+            # Marker chapter should match the chunk's real chapter, and the book
+            # should match the chunk's real book.
+            if int(chapter_str) != chunk["chapter_number"]:
+                valid = False
+            if book_key != chunk.get("book_key"):
+                valid = False
+
+        all_valid += valid
+        grounded = bool(expected_chapters & cited_chapters) if expected_chapters else True
+        chapter_grounded += grounded
+
+        flags = []
+        if not valid:
+            flags.append("INVALID-CITE")
+        if not grounded:
+            flags.append("OFF-CHAPTER")
+        status = "OK" if not flags else ",".join(flags)
+        print(f"  {status:16s}  cited_ch={sorted(cited_chapters)}  q={query!r}")
+
+    print(f"\n{'='*60}")
+    print(f"Answers with >=1 citation: {with_citation}/{total} = {with_citation/max(total,1):.1%}")
+    print(f"All citations valid:       {all_valid}/{total} = {all_valid/max(total,1):.1%}")
+    print(f"Chapter-grounded:          {chapter_grounded}/{total} = {chapter_grounded/max(total,1):.1%}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Retrieval evaluation")
+    parser = argparse.ArgumentParser(description="Book Assistant evaluation")
+    parser.add_argument("--mode", choices=["retrieval", "faithfulness"], default="retrieval")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--questions", default="eval/questions.yaml")
     args = parser.parse_args()
 
     questions = load_questions(Path(args.questions))
-    print(f"Evaluating {len(questions)} questions at k={args.k}\n")
-    evaluate(questions, args.base_url, args.k)
+    print(f"Mode: {args.mode} · {len(questions)} questions\n")
+
+    if args.mode == "retrieval":
+        evaluate_retrieval(questions, args.base_url, args.k)
+    else:
+        evaluate_faithfulness(questions, args.base_url)
 
 
 if __name__ == "__main__":

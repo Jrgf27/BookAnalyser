@@ -57,52 +57,70 @@ def chunk_chapter(
     paragraphs = re.split(r"\n\s*\n", chapter_text)
     paragraphs = [p.strip() for p in paragraphs if p.strip()]
 
-    # Expand paragraphs that exceed the hard ceiling into sentences
-    units: list[str] = []
+    # Build units with *precomputed* char offsets, located with a forward-only
+    # cursor.  A naive chapter_text.find(unit) from position 0 returns the first
+    # occurrence, so any repeated paragraph/sentence (refrains, short dialogue
+    # like "Yes.") gets the wrong offset — advancing the cursor fixes that and
+    # keeps offsets monotonic.  Each unit is {text, start, end, tokens}.
+    units: list[dict[str, Any]] = []
+    cursor = 0
     for para in paragraphs:
+        idx = chapter_text.find(para, cursor)
+        if idx == -1:  # whitespace normalisation drift — fall back to anywhere
+            idx = chapter_text.find(para)
+        p_start = idx if idx != -1 else cursor
+        p_end = p_start + len(para)
+        cursor = p_end
+
         if _count_tokens(para) <= hard_ceiling:
-            units.append(para)
+            units.append(
+                {"text": para, "start": p_start, "end": p_end, "tokens": _count_tokens(para)}
+            )
         else:
-            # Sentence-level fallback
+            # Sentence-level fallback, offsets located within the paragraph span.
+            s_cursor = p_start
             for sent in _split_sentences(para):
-                units.append(sent)
+                sidx = chapter_text.find(sent, s_cursor)
+                if sidx == -1 or sidx >= p_end:
+                    sidx = chapter_text.find(sent, p_start)
+                s_start = sidx if sidx != -1 else s_cursor
+                s_end = s_start + len(sent)
+                s_cursor = s_end
+                units.append(
+                    {"text": sent, "start": s_start, "end": s_end, "tokens": _count_tokens(sent)}
+                )
 
     if not units:
         return []
 
     chunks: list[dict[str, Any]] = []
-    current_units: list[str] = []
+    current_units: list[dict[str, Any]] = []
     current_tokens = 0
 
-    def _emit(unit_list: list[str]) -> None:
-        text = "\n\n".join(unit_list)
-        char_start = chapter_text.find(unit_list[0])
-        # Find the end position of the last unit
-        last_start = chapter_text.find(unit_list[-1], char_start)
-        char_end = last_start + len(unit_list[-1])
+    def _emit(unit_list: list[dict[str, Any]]) -> None:
+        text = "\n\n".join(u["text"] for u in unit_list)
         chunks.append({
             "text": text,
-            "char_start": char_start,
-            "char_end": char_end,
+            "char_start": unit_list[0]["start"],
+            "char_end": unit_list[-1]["end"],
             "chapter_number": chapter_number,
             "token_count": _count_tokens(text),
         })
 
     for unit in units:
-        unit_tokens = _count_tokens(unit)
+        unit_tokens = unit["tokens"]
 
         if current_tokens + unit_tokens > target_tokens and current_units:
             _emit(current_units)
 
             # Compute overlap: keep trailing units that fit within overlap budget
-            overlap_units: list[str] = []
+            overlap_units: list[dict[str, Any]] = []
             overlap_tok = 0
             for u in reversed(current_units):
-                t = _count_tokens(u)
-                if overlap_tok + t > overlap_tokens:
+                if overlap_tok + u["tokens"] > overlap_tokens:
                     break
                 overlap_units.insert(0, u)
-                overlap_tok += t
+                overlap_tok += u["tokens"]
 
             current_units = overlap_units
             current_tokens = overlap_tok
