@@ -1,0 +1,81 @@
+# Golden questions for retrieval evaluation.
+# Each entry has a natural-language query and the expected chunk IDs (or
+# chapter numbers) that a correct retrieval should surface.
+#
+# Chunk IDs are populated after the first successful ingestion run.
+# Until then, use chapter_numbers as a coarser ground-truth signal.
+
+- query: "How does Jo react when she learns Beth is seriously ill?"
+  book_key: lw
+  expected_chapters: [17, 18]
+  expected_chunk_ids: []
+
+- query: "What is Mr. Darcy's first proposal to Elizabeth?"
+  book_key: pp
+  expected_chapters: [34]
+  expected_chunk_ids: []
+
+- query: "Describe Meg's wedding in Little Women"
+  book_key: lw
+  expected_chapters: [25]
+  expected_chunk_ids: []
+
+- query: "How does Elizabeth's opinion of Darcy change after visiting Pemberley?"
+  book_key: pp
+  expected_chapters: [43, 44]
+  expected_chunk_ids: []
+
+- query: "What role does Marmee play in the March sisters' moral education?"
+  book_key: lw
+  expected_chapters: [1, 4, 8]
+  expected_chunk_ids: []
+
+- query: "How does Lydia's elopement affect the Bennet family?"
+  book_key: pp
+  expected_chapters: [46, 47, 48]
+  expected_chunk_ids: []
+
+- query: "Jo's struggles with her temper"
+  book_key: lw
+  expected_chapters: [8]
+  expected_chunk_ids: []
+
+- query: "Lady Catherine confronts Elizabeth about Darcy"
+  book_key: pp
+  expected_chapters: [56]
+  expected_chunk_ids: []
+
+- query: "Amy burning Jo's manuscript"
+  book_key: lw
+  expected_chapters: [8]
+  expected_chunk_ids: []
+
+- query: "Mr. Collins proposes to Elizabeth"
+  book_key: pp
+  expected_chapters: [19]
+  expected_chunk_ids: []
+
+- query: "How do both novels portray the tension between love and financial security in marriage?"
+  book_key: null
+  expected_chapters: []
+  expected_chunk_ids: []
+
+- query: "Beth's death scene"
+  book_key: lw
+  expected_chapters: [40]
+  expected_chunk_ids: []
+
+- query: "Wickham's true character revealed"
+  book_key: pp
+  expected_chapters: [35, 36]
+  expected_chunk_ids: []
+
+- query: "Professor Bhaer and Jo's relationship"
+  book_key: lw
+  expected_chapters: [33, 45, 46]
+  expected_chunk_ids: []
+
+- query: "Jane Bennet's illness at Netherfield"
+  book_key: pp
+  expected_chapters: [7, 8, 9]
+  expected_chunk_ids: []
