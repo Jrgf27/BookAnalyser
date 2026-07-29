@@ -15,6 +15,16 @@ from bs4 import BeautifulSoup, Tag
 
 logger = logging.getLogger(__name__)
 
+# Prefer lxml (fast, handles broken HTML well) but fall back to the stdlib
+# html.parser if lxml's C library isn't available (e.g. dev machines without
+# libxml2-dev).  Production uses the Docker image which always has lxml.
+try:
+    import lxml  # noqa: F401
+    _BS4_PARSER = "lxml"
+except ImportError:
+    _BS4_PARSER = "html.parser"
+    logger.info("lxml not available, falling back to html.parser")
+
 # Roman numeral pattern for chapter detection
 _ROMAN = re.compile(
     r"^(CHAPTER\s+)?"
@@ -52,7 +62,7 @@ class GutenbergParser:
     def parse(self, path: Path, book_key: str) -> list[dict[str, Any]]:
         logger.info("Parsing %s", path)
         html = path.read_text(encoding="utf-8")
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, _BS4_PARSER)
 
         # Strip Gutenberg header/footer
         for sel in ("#pg-header", "#pg-footer", ".pg-header", ".pg-footer"):
@@ -62,6 +72,9 @@ class GutenbergParser:
         # Unwrap drop-cap spans (some editions use <span class="letra">)
         for span in soup.select("span.letra"):
             span.unwrap()
+        # After unwrapping, adjacent text nodes need merging so
+        # get_text() doesn't insert spurious spaces (e.g. "T" + "he" → "The")
+        soup.smooth()
 
         # Dispatch to per-book extractor
         chapters = self._extract_chapters(soup, book_key)

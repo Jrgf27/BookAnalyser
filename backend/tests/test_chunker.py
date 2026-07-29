@@ -31,18 +31,23 @@ class TestChunker:
         assert len(chunks) > 1
 
     def test_overlap_exists(self) -> None:
-        # With overlap, consecutive chunks should share some text
-        paras = [f"Sentence {i} of the story. " * 20 for i in range(10)]
+        # With overlap, consecutive chunks should share some text.
+        # Use a common sentence repeated so each paragraph is identical —
+        # the overlap mechanism keeps trailing paragraphs from the previous
+        # chunk, so the same text should appear in both.
+        paras = ["The quick brown fox jumps over the lazy dog. " * 15 for _ in range(10)]
         text = "\n\n".join(paras)
         chunks = chunk_chapter(
             text, chapter_number=1, target_tokens=100, overlap_fraction=0.3
         )
-        if len(chunks) >= 2:
-            # Check that some content from the end of chunk 0 appears in chunk 1
-            chunk0_lines = set(chunks[0]["text"].split("\n\n"))
-            chunk1_lines = set(chunks[1]["text"].split("\n\n"))
-            overlap = chunk0_lines & chunk1_lines
-            assert len(overlap) > 0, "Expected overlapping paragraphs between chunks"
+        assert len(chunks) >= 2, "Expected at least 2 chunks"
+        # The last paragraph(s) of chunk 0 should appear at the start of chunk 1
+        chunk0_end = chunks[0]["char_end"]
+        chunk1_start = chunks[1]["char_start"]
+        assert chunk1_start < chunk0_end, (
+            f"Expected overlap: chunk0 ends at {chunk0_end}, "
+            f"chunk1 starts at {chunk1_start}"
+        )
 
     def test_char_offsets_valid(self) -> None:
         text = "Para one.\n\nPara two.\n\nPara three."
