@@ -17,5 +17,7 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "//": "Tests are transformed/run by Vitest (esbuild), so keep them out of the production `tsc` build.",
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
 }

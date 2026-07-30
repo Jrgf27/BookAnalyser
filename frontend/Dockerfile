@@ -1,11 +1,10 @@
 # Stage 1: build
 FROM node:20-slim AS build
 WORKDIR /app
-# Use `npm install` rather than `npm ci`: no package-lock.json is committed, and
-# `npm ci` hard-fails without one.  (Commit a lockfile and switch back to
-# `npm ci` for reproducible builds.)
-COPY package.json package-lock.json* ./
-RUN npm install
+# `npm ci` gives reproducible installs from the committed lockfile (and fails
+# fast if package.json and package-lock.json drift out of sync).
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 

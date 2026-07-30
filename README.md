@@ -204,12 +204,27 @@ The Vite dev server proxies `/api` to the backend, mirroring the Docker setup.
 ### Tests
 
 ```bash
+# Backend (pytest)
 cd backend && PYTHONPATH=. python -m pytest
+
+# Frontend (Vitest + Testing Library)
+cd frontend && npm test
 ```
 
-Covers parsing, chunking, the store (incl. schema migration + crash cleanup),
-citation validation, scope enforcement, sessions, book upload/delete, and
-background ingestion with progress reporting.
+The backend suite covers parsing, chunking, the store (incl. schema migration +
+crash cleanup), citation validation, scope enforcement, sessions, book
+upload/delete, background ingestion with progress reporting, ingestion
+serialization, and the durable queue (persistence, terminal cleanup, resume).
+The frontend suite covers the API client and the book-manager queue UI (per-job
+progress, queued state, upload-while-busy, delete gating).
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests,
+with two parallel jobs: **backend** (`pip install` + `pytest`) and **frontend**
+(`npm ci` + `npm run build` + `npm test`). Both are hermetic — the Azure-touching
+code is stubbed in tests, so no secrets are required — with dependency caching
+and cancellation of superseded runs.
 
 ## Evaluation
 
