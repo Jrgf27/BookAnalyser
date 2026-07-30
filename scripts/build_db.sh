@@ -19,7 +19,7 @@ cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT/backend${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ ! -f "$REPO_ROOT/.env" ]; then
-    echo "ERROR: .env not found. Copy env.example → .env and fill in credentials."
+    echo "ERROR: .env not found. Copy .env.example → .env and fill in credentials."
     exit 1
 fi
 

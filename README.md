@@ -9,15 +9,15 @@ Currently loaded with **Little Women** and **Pride & Prejudice** from Project Gu
 Source HTML → Ingestion (BS4 + tiktoken + embeddings + LLM summaries)
            → SQLite (FTS5 + sqlite-vec)
            → Hybrid Retrieval (BM25 + cosine KNN, RRF fusion)
-           → Tool-calling Agent (5-round cap, citation contract)
-           → FastAPI + React frontend
+           → Tool-calling Agent (5-round cap, citation contract, multi-turn)
+           → FastAPI (SSE token streaming) + React frontend
 ```
 
 ## Quick Start
 
 ```bash
 # 1. Clone and configure
-cp env.example .env
+cp .env.example .env
 # Edit .env with your Azure OpenAI credentials
 
 # 2. Build the database (one-time, ~5 min)
@@ -47,14 +47,30 @@ book-assistant/
 ├── frontend/          # React + Vite
 ├── data/
 │   ├── raw/           # Source HTML files (committed)
-│   └── books.db       # Built artifact (not committed)
+│   ├── books.db       # Built book cache (not committed, rebuildable)
+│   └── sessions.db    # Durable chat history (not committed, runtime data)
 ├── eval/              # Retrieval evaluation harness
 └── scripts/           # Utility scripts
 ```
 
 ## Key Design Decisions
 
-- **Single SQLite file** — no database server, ships as one artifact
+- **Two SQLite files, two lifecycles** — `books.db` is a rebuildable cache
+  (drop-and-rebuild on ingest); `sessions.db` holds durable chat history, so
+  re-ingesting books never wipes a user's conversations
+- **Persistent chat sessions** — every conversation is saved and resumable via a
+  sidebar (create / switch / rename / delete), auto-titled from its first
+  message; the server loads history from the DB, so it's the source of truth
+  rather than the client replaying transcripts
+- **Runtime book management** — books can be uploaded (HTML) and removed from the
+  UI ("Manage books"); uploads reuse the same ingest pipeline as the CLI (parse
+  → chunk → embed → summarize) and non-Gutenberg HTML falls back to a single
+  whole-document chapter. Derived book keys are alphanumeric slugs so citations
+  keep working
+- **Background ingestion** — uploads run as a tracked background job that reports
+  progress (parsing → embedding → summarizing) polled by the UI; the CPU/DB-bound
+  stages run in a worker thread (`asyncio.to_thread`) so a large upload never
+  blocks chat streaming or search
 - **Hybrid retrieval** — FTS5 BM25 + sqlite-vec cosine KNN, fused with RRF (k=60)
 - **Chunking** — ~600 tokens, ~15% overlap, paragraph-aligned, chapter-bounded
 - **Robust chapter parsing** — the two Gutenberg editions differ (roman-numeral

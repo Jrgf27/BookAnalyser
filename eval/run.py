@@ -4,11 +4,11 @@ Two modes:
 
 * ``retrieval`` (default) — hit-rate @k against ``/search``.  Needs only the
   embedding model, so it's cheap and deterministic.
-* ``faithfulness`` — end-to-end check against ``/chat``.  For each question it
-  asks the agent, parses the inline citations, and verifies that every cited
-  chunk actually exists, resolves to the expected book, and lands in an expected
-  chapter.  This catches hallucinated or misgrounded citations that a pure
-  retrieval metric can't see.
+* ``faithfulness`` — end-to-end check against ``/chat/stream``.  For each
+  question it asks the agent (consuming the SSE stream), parses the inline
+  citations, and verifies that every cited chunk actually exists, resolves to
+  the expected book, and lands in an expected chapter.  This catches
+  hallucinated or misgrounded citations that a pure retrieval metric can't see.
 
 Usage:
     python eval/run.py                                  # retrieval, k=10
@@ -19,14 +19,48 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
 import httpx
 import yaml
 
-# Inline citation markers like [pp:34:1207]
-_CITE_RE = re.compile(r"\[([a-z]+):(\d+):(\d+)\]")
+# Inline citation markers like [pp:34:1207] (keys are alphanumeric slugs)
+_CITE_RE = re.compile(r"\[([a-z0-9]+):(\d+):(\d+)\]")
+
+
+def _stream_answer(
+    client: httpx.Client, message: str, book_id: int | None
+) -> tuple[str, str | None]:
+    """POST to /chat/stream and reassemble the final answer from SSE events.
+
+    Returns ``(answer, session_id)``; the caller deletes the throwaway session
+    so evaluation runs don't accumulate junk conversations.
+    """
+    answer = ""
+    session_id: str | None = None
+    with client.stream(
+        "POST", "/chat/stream", json={"message": message, "book_id": book_id}
+    ) as resp:
+        if resp.status_code != 200:
+            resp.read()
+            raise httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}", request=resp.request, response=resp
+            )
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            ev = json.loads(line[5:].strip())
+            kind = ev.get("type")
+            if kind == "session":
+                session_id = ev.get("session_id")
+            elif kind == "done":
+                # The terminal event carries the citation-validated answer.
+                answer = ev.get("answer", "")
+            elif kind == "error":
+                raise RuntimeError(ev.get("message", "stream error"))
+    return answer, session_id
 
 
 def load_questions(path: Path) -> list[dict]:
@@ -98,13 +132,18 @@ def evaluate_faithfulness(questions: list[dict], base_url: str) -> None:
         expected_chapters = set(q.get("expected_chapters") or [])
         book_id = _resolve_book_id(client, expected_book)
 
-        resp = client.post("/chat", json={"message": query, "book_id": book_id})
-        if resp.status_code != 200:
-            print(f"  SKIP  {query!r} — HTTP {resp.status_code}")
+        session_id: str | None = None
+        try:
+            answer, session_id = _stream_answer(client, query, book_id)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            print(f"  SKIP  {query!r} — {exc}")
             continue
+        finally:
+            # Clean up the throwaway session created by this eval turn.
+            if session_id:
+                client.delete(f"/sessions/{session_id}")
 
         total += 1
-        answer = resp.json().get("answer", "")
         cites = _CITE_RE.findall(answer)  # list of (book_key, chapter, chunk_id)
 
         if not cites:

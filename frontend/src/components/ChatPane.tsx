@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import type { ChatResponse } from '../types';
-import { sendChat } from '../api';
+import type { ChatResponse, StoredMessage, ToolCall } from '../types';
+import { sendChatStream } from '../api';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -8,13 +8,19 @@ interface Message {
 }
 
 interface Props {
+  sessionId: string | null;
+  initialMessages: StoredMessage[];
   bookId: number | null;
   onCitationClick: (chunkId: number) => void;
   onResponse: (response: ChatResponse) => void;
+  /** Fired when a new session is created server-side (first message of a chat). */
+  onSessionCreated: (id: string) => void;
+  /** Fired after each completed turn so the sidebar can refresh order/titles. */
+  onTurnComplete: () => void;
 }
 
-/** Regex for citation markers like [pp:12:347] */
-const CITE_RE = /\[([a-z]+:\d+:\d+)\]/g;
+/** Regex for citation markers like [pp:12:347] (keys are alphanumeric slugs) */
+const CITE_RE = /\[([a-z0-9]+:\d+:\d+)\]/g;
 
 function renderWithCitations(
   text: string,
@@ -57,10 +63,23 @@ function renderWithCitations(
   return parts;
 }
 
-export default function ChatPane({ bookId, onCitationClick, onResponse }: Props) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export default function ChatPane({
+  sessionId,
+  initialMessages,
+  bookId,
+  onCitationClick,
+  onResponse,
+  onSessionCreated,
+  onTurnComplete,
+}: Props) {
+  // Seeded from the resumed session; ChatPane is remounted (keyed) on switch.
+  const [messages, setMessages] = useState<Message[]>(
+    initialMessages.map((m) => ({ role: m.role, content: m.content })),
+  );
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // Server owns history; we only track which session this turn belongs to.
+  const sessionRef = useRef<string | null>(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,20 +91,56 @@ export default function ChatPane({ bookId, onCitationClick, onResponse }: Props)
     if (!text || loading) return;
 
     setInput('');
-    setMessages((prev) => [...prev, { role: 'user', content: text }]);
+    // Append the user turn and an empty assistant turn we fill as tokens arrive.
+    const assistantIndex = messages.length + 1;
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text },
+      { role: 'assistant', content: '' },
+    ]);
     setLoading(true);
 
+    const setAssistant = (content: string) =>
+      setMessages((prev) => {
+        const next = [...prev];
+        next[assistantIndex] = { role: 'assistant', content };
+        return next;
+      });
+
+    let acc = '';
+    const trace: ToolCall[] = [];
+
     try {
-      const response = await sendChat({ message: text, book_id: bookId });
-      setMessages((prev) => [...prev, { role: 'assistant', content: response.answer }]);
-      onResponse(response);
+      await sendChatStream(
+        { message: text, book_id: bookId, session_id: sessionRef.current },
+        (ev) => {
+          if (ev.type === 'session') {
+            // First message of a new chat: adopt the server-assigned id.
+            if (sessionRef.current === null) {
+              sessionRef.current = ev.session_id;
+              onSessionCreated(ev.session_id);
+            }
+          } else if (ev.type === 'token') {
+            acc += ev.text;
+            setAssistant(acc);
+          } else if (ev.type === 'tool') {
+            trace.push({ tool: ev.tool, args: ev.args, result_preview: ev.result_preview });
+            // Surface tool activity live in the trace panel.
+            onResponse({ answer: acc, citations: [], trace: [...trace] });
+          } else if (ev.type === 'done') {
+            acc = ev.answer;
+            setAssistant(ev.answer);
+            onResponse({ answer: ev.answer, citations: ev.citations, trace: ev.trace });
+          } else if (ev.type === 'error') {
+            throw new Error(ev.message);
+          }
+        },
+      );
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `Error: ${err instanceof Error ? err.message : 'unknown'}` },
-      ]);
+      setAssistant(`Error: ${err instanceof Error ? err.message : 'unknown'}`);
     } finally {
       setLoading(false);
+      onTurnComplete();
     }
   };
 

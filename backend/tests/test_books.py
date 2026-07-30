@@ -1,0 +1,214 @@
+"""Tests for book parsing/ingestion, upload/delete endpoints, and summary exposure."""
+
+from __future__ import annotations
+
+import asyncio
+
+from fastapi.testclient import TestClient
+
+import app.api.books as books_api
+import app.ingest.pipeline as pipeline
+from app.api.books import _slugify, _unique_key
+from app.api.deps import get_jobs, get_settings, get_store
+from app.config import Settings
+from app.ingest.jobs import JobRegistry
+from app.ingest.parser import GutenbergParser
+from app.main import app
+from app.store.sqlite_store import SqliteChunkStore
+
+
+def _settings() -> Settings:
+    return Settings(azure_openai_endpoint="https://x/", azure_openai_api_key="k")
+
+
+def _store(tmp_path) -> SqliteChunkStore:
+    return SqliteChunkStore(tmp_path / "b.db", embedding_dim=8)
+
+
+# ---- Parser ----
+
+
+class TestParseHtml:
+    def test_extracts_chapters(self) -> None:
+        html = "<h2>CHAPTER I.</h2><p>Alpha.</p><h2>CHAPTER II.</h2><p>Beta.</p>"
+        chapters = GutenbergParser().parse_html(html, book_key="x")
+        assert [c["number"] for c in chapters] == [1, 2]
+        assert "Alpha" in chapters[0]["text"]
+
+    def test_fallback_single_chapter(self) -> None:
+        # No chapter headings → whole document becomes one chapter.
+        html = "<html><body><p>Just some prose with no headings.</p></body></html>"
+        chapters = GutenbergParser().parse_html(html, book_key="x")
+        assert len(chapters) == 1
+        assert chapters[0]["number"] == 1
+        assert "prose" in chapters[0]["text"]
+
+    def test_empty_html_yields_nothing(self) -> None:
+        assert GutenbergParser().parse_html("<html></html>", book_key="x") == []
+
+
+# ---- Slug helpers ----
+
+
+class TestKeyHelpers:
+    def test_slugify_strips_non_alnum(self) -> None:
+        assert _slugify("Great Expectations!") == "greatexpectations"
+        assert _slugify("A Tale: 2 Cities") == "atale2cities"
+        assert _slugify("---") == "book"
+
+    def test_unique_key_appends_suffix(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        store.conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count) "
+            "VALUES ('X','Y','mybook',1,1)"
+        )
+        store.conn.commit()
+        assert _unique_key(store, "mybook") == "mybook2"
+        assert _unique_key(store, "fresh") == "fresh"
+        store.close()
+
+
+# ---- Pipeline (LLM calls mocked) ----
+
+
+class TestIngestPipeline:
+    def test_ingests_chapters_and_chunks(self, tmp_path, monkeypatch) -> None:
+        store = _store(tmp_path)
+
+        async def fake_embed(texts, settings, **kw):
+            return [[0.0] * 8 for _ in texts]
+
+        async def fake_summarize(store, book_id, settings):
+            store.conn.execute(
+                "UPDATE books SET summary = 'mock' WHERE id = ?", (book_id,)
+            )
+            store.conn.commit()
+
+        monkeypatch.setattr(pipeline, "get_embeddings_batched", fake_embed)
+        monkeypatch.setattr(pipeline, "summarize_chapters", fake_summarize)
+
+        html = (
+            "<h2>CHAPTER I.</h2><p>" + ("word " * 300) + "</p>"
+            "<h2>CHAPTER II.</h2><p>" + ("more " * 300) + "</p>"
+        )
+        book_id = asyncio.run(
+            pipeline.ingest_book_html(
+                store, _settings(), html=html, key="tb", title="Test", author="A"
+            )
+        )
+        book = store.conn.execute(
+            "SELECT chapter_count, summary FROM books WHERE id = ?", (book_id,)
+        ).fetchone()
+        assert book["chapter_count"] == 2
+        assert book["summary"] == "mock"
+        n_chunks = store.conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE book_id = ?", (book_id,)
+        ).fetchone()["n"]
+        assert n_chunks > 0
+        store.close()
+
+    def test_rejects_empty_html(self, tmp_path, monkeypatch) -> None:
+        store = _store(tmp_path)
+        monkeypatch.setattr(pipeline, "get_embeddings_batched", lambda *a, **k: [])
+        try:
+            asyncio.run(
+                pipeline.ingest_book_html(
+                    store, _settings(), html="<html></html>",
+                    key="x", title="X", author="Y",
+                )
+            )
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+        store.close()
+
+
+# ---- Endpoints ----
+
+
+class TestBookEndpoints:
+    def test_get_books_returns_summary(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        store.conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count,summary) "
+            "VALUES ('T','A','t',1,1,'A short summary')"
+        )
+        store.conn.commit()
+        app.dependency_overrides[get_store] = lambda: store
+        client = TestClient(app)
+        try:
+            resp = client.get("/books")
+            assert resp.status_code == 200
+            assert resp.json()[0]["summary"] == "A short summary"
+        finally:
+            app.dependency_overrides.clear()
+            store.close()
+
+    def test_upload_rejects_non_html(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        app.dependency_overrides[get_store] = lambda: store
+        app.dependency_overrides[get_settings] = lambda: _settings()
+        app.dependency_overrides[get_jobs] = lambda: JobRegistry()
+        client = TestClient(app)
+        try:
+            resp = client.post(
+                "/books",
+                files={"file": ("notes.txt", b"hello", "text/plain")},
+                data={"title": "Notes"},
+            )
+            assert resp.status_code == 400
+        finally:
+            app.dependency_overrides.clear()
+            store.close()
+
+    def test_upload_returns_job_and_status_lookup(self, tmp_path, monkeypatch) -> None:
+        store = _store(tmp_path)
+        jobs = JobRegistry()
+        # Don't actually run the background coroutine; just close it.
+        monkeypatch.setattr(books_api, "_spawn", lambda coro: coro.close())
+        app.dependency_overrides[get_store] = lambda: store
+        app.dependency_overrides[get_settings] = lambda: _settings()
+        app.dependency_overrides[get_jobs] = lambda: jobs
+        client = TestClient(app)
+        try:
+            resp = client.post(
+                "/books",
+                files={"file": ("b.html", b"<html><body><p>hi</p></body></html>", "text/html")},
+                data={"title": "My Book", "author": "Me"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "queued"
+            assert body["title"] == "My Book"
+            job_id = body["id"]
+
+            # The job is queryable via the status endpoint.
+            status = client.get(f"/books/jobs/{job_id}")
+            assert status.status_code == 200
+            assert status.json()["id"] == job_id
+            # Unknown job → 404.
+            assert client.get("/books/jobs/nope").status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            store.close()
+
+    def test_delete_book(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        cur = store.conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count) "
+            "VALUES ('T','A','t',1,1)"
+        )
+        store.conn.commit()
+        bid = cur.lastrowid
+        app.dependency_overrides[get_store] = lambda: store
+        client = TestClient(app)
+        try:
+            assert client.delete(f"/books/{bid}").status_code == 200
+            assert store.conn.execute(
+                "SELECT COUNT(*) AS n FROM books"
+            ).fetchone()["n"] == 0
+            # Deleting again is a 404.
+            assert client.delete(f"/books/{bid}").status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            store.close()

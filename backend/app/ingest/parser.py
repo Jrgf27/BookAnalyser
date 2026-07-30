@@ -25,14 +25,6 @@ except ImportError:
     _BS4_PARSER = "html.parser"
     logger.info("lxml not available, falling back to html.parser")
 
-# Roman numeral pattern for chapter detection
-_ROMAN = re.compile(
-    r"^(CHAPTER\s+)?"
-    r"(M{0,3})(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})"
-    r"\.?$",
-    re.IGNORECASE,
-)
-
 ROMAN_VALUES = {
     "I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000,
 }
@@ -95,7 +87,14 @@ class GutenbergParser:
 
     def parse(self, path: Path, book_key: str) -> list[dict[str, Any]]:
         logger.info("Parsing %s", path)
-        html = path.read_text(encoding="utf-8")
+        return self.parse_html(path.read_text(encoding="utf-8"), book_key=book_key)
+
+    def parse_html(self, html: str, book_key: str) -> list[dict[str, Any]]:
+        """Parse raw HTML into chapters.
+
+        Falls back to a single whole-document chapter when no chapter headings
+        are detected, so arbitrary (non-Gutenberg) HTML uploads still ingest.
+        """
         soup = BeautifulSoup(html, _BS4_PARSER)
 
         # Strip Gutenberg header/footer
@@ -118,6 +117,19 @@ class GutenbergParser:
 
         # Dispatch to per-book extractor
         chapters = self._extract_chapters(soup, book_key)
+
+        # Fallback for HTML with no recognisable chapter headings: treat the
+        # whole document as a single chapter so any upload still ingests.
+        if not chapters:
+            text = soup.get_text("\n", strip=True)
+            if text.strip():
+                logger.info("No chapter headings in %s; using single-chapter fallback", book_key)
+                chapters = [{
+                    "number": 1,
+                    "title": "Full text",
+                    "text": text,
+                    "word_count": len(text.split()),
+                }]
 
         # Assert contiguity: chapter numbers should be 1..N with no gaps
         numbers = [ch["number"] for ch in chapters]

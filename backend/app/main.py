@@ -7,18 +7,24 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.store.sqlite_store import SqliteChunkStore
-from app.api import books, chunks, search, chat
+from app.store.session_store import SessionStore
+from app.ingest.jobs import JobRegistry
+from app.api import books, chunks, search, chat, sessions
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Open the store on startup, close on shutdown."""
+    """Open the stores on startup, close on shutdown."""
     settings = get_settings()
     store = SqliteChunkStore(settings.database_path, embedding_dim=settings.embedding_dimensions)
+    session_store = SessionStore(settings.sessions_database_path)
     app.state.store = store
+    app.state.session_store = session_store
+    app.state.ingest_jobs = JobRegistry()
     app.state.settings = settings
     yield
     store.close()
+    session_store.close()
 
 
 app = FastAPI(
@@ -36,6 +42,7 @@ app.include_router(books.router)
 app.include_router(chunks.router)
 app.include_router(search.router)
 app.include_router(chat.router)
+app.include_router(sessions.router)
 
 
 @app.get("/health")

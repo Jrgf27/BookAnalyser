@@ -22,6 +22,9 @@ class Settings(BaseSettings):
 
     # ---- Paths ----
     database_path: Path = Path("data/books.db")
+    # Durable chat history — deliberately a separate file from the rebuildable
+    # book cache (books.db), so re-ingesting books never wipes user sessions.
+    sessions_database_path: Path = Path("data/sessions.db")
     raw_data_dir: Path = Path("data/raw")
 
     # ---- Logging ----

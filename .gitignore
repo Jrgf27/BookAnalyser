@@ -17,6 +17,10 @@ frontend/dist/
 data/books.db
 data/books.db-journal
 data/books.db-wal
+# Durable chat history (user data, created at runtime)
+data/sessions.db
+data/sessions.db-journal
+data/sessions.db-wal
 
 # ---------- Environment ----------
 .env

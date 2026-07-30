@@ -15,7 +15,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_books",
-            "description": "List all available books with metadata (id, title, author, word count, chapter count).",
+            "description": "List all available books with metadata (id, title, author, word count, chapter count) and a short book-level summary.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -132,7 +132,7 @@ async def dispatch_tool(
 
     if name == "list_books":
         rows = store.conn.execute(
-            "SELECT id, title, author, key, word_count, chapter_count FROM books"
+            "SELECT id, title, author, key, word_count, chapter_count, summary FROM books"
         ).fetchall()
         result = [dict(r) for r in rows]
 
@@ -175,15 +175,27 @@ async def dispatch_tool(
         result = data if data else {"error": "chunk not found"}
 
     elif name == "find_similar_passages":
-        from app.store.similarity import find_cross_book_pairs
+        # Cross-book comparison is meaningless when the user has pinned the
+        # conversation to a single book — and it would leak the other book the
+        # scope is meant to exclude.  Refuse rather than silently ignoring scope.
+        if scope_book_id is not None:
+            result = {
+                "error": (
+                    "Cross-book comparison is unavailable: the conversation is "
+                    "scoped to a single book. Ask the user to switch to 'All "
+                    "books' to compare passages across titles."
+                )
+            }
+        else:
+            from app.store.similarity import find_cross_book_pairs
 
-        pairs = find_cross_book_pairs(
-            store,
-            args["book_id_a"],
-            args["book_id_b"],
-            args.get("top_k", 10),
-        )
-        result = [p.model_dump() for p in pairs]
+            pairs = find_cross_book_pairs(
+                store,
+                args["book_id_a"],
+                args["book_id_b"],
+                args.get("top_k", 10),
+            )
+            result = [p.model_dump() for p in pairs]
 
     else:
         result = {"error": f"Unknown tool: {name}"}
