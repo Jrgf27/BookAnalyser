@@ -20,18 +20,17 @@ Source HTML → Ingestion (BS4 + tiktoken + embeddings + LLM summaries)
 cp .env.example .env
 # Edit .env with your Azure OpenAI credentials
 
-# 2. Build the database (one-time, ~5 min)
-# Run from the repo root — data/raw and data/books.db are resolved relative to
-# the current directory, and must match the paths Docker mounts.
-pip install -r backend/requirements.txt
-PYTHONPATH=backend python -m app.ingest
-# (or simply: ./scripts/build_db.sh)
-
-# 3. Run with Docker
+# 2. Run with Docker
 docker compose up --build
 ```
 
 The app is available at `http://localhost:5173` (frontend) and `http://localhost:8000` (API).
+
+The database starts empty. Add books from the UI — click **Manage books**,
+give a title/author, and upload an HTML file; ingestion (parse → chunk → embed
+→ summarize) runs in the background with a progress bar, and the book appears
+once it's ready. Two sample books are included under `data/raw/` (Little Women,
+Pride & Prejudice) that you can upload to get started.
 
 ## Project Structure
 
@@ -40,17 +39,17 @@ book-assistant/
 ├── backend/           # FastAPI application
 │   └── app/
 │       ├── api/       # Route handlers
-│       ├── ingest/    # Offline HTML→DB pipeline
+│       ├── ingest/    # HTML→DB pipeline (driven by book uploads)
 │       ├── store/     # SQLite + FTS5 + sqlite-vec
 │       ├── agent/     # Tool-calling LLM loop
 │       └── llm/       # Azure OpenAI clients
 ├── frontend/          # React + Vite
 ├── data/
-│   ├── raw/           # Source HTML files (committed)
-│   ├── books.db       # Built book cache (not committed, rebuildable)
+│   ├── raw/           # Sample HTML books to upload via the UI
+│   ├── books.db       # Book cache (not committed, built from uploads)
 │   └── sessions.db    # Durable chat history (not committed, runtime data)
 ├── eval/              # Retrieval evaluation harness
-└── scripts/           # Utility scripts
+└── scripts/           # Utility scripts (Azure connectivity probe)
 ```
 
 ## Key Design Decisions
@@ -98,7 +97,7 @@ python eval/run.py
 
 # End-to-end citation faithfulness: asks the agent, then checks every cited
 # chunk exists, matches its marker's book/chapter, and lands in an expected
-# chapter (needs the chat model + a built DB)
+# chapter (needs the chat model and the sample books uploaded via the UI)
 python eval/run.py --mode faithfulness
 ```
 

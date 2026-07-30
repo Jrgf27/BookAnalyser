@@ -1,7 +1,7 @@
-"""Reusable single-book ingestion: HTML → chunks → embeddings → summaries → DB.
+"""Single-book ingestion: HTML → chunks → embeddings → summaries → DB.
 
-Shared by the offline CLI (`python -m app.ingest`) and the runtime upload
-endpoint (`POST /books`), so both paths ingest identically.
+Drives the book-upload endpoint (`POST /books`): a user uploads an HTML file
+and this builds the searchable book from it.
 
 The synchronous, CPU/DB-bound stages (parsing, chunking, SQLite writes) run in a
 worker thread via ``asyncio.to_thread`` so a large upload never blocks the event
