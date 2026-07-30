@@ -98,7 +98,8 @@ def _unique_key(store: SqliteChunkStore, base: str) -> str:
 @router.get("", response_model=list[BookMeta])
 def list_books(store: SqliteChunkStore = Depends(get_store)) -> list[BookMeta]:
     rows = store.conn.execute(
-        "SELECT id, title, author, key, word_count, chapter_count, summary FROM books"
+        "SELECT id, title, author, key, word_count, chapter_count, summary "
+        "FROM books WHERE ready = 1"
     ).fetchall()
     return [
         BookMeta(
@@ -163,6 +164,20 @@ async def upload_book(
     if not title:
         raise HTTPException(400, "A title is required.")
 
+    author = author.strip() or "Unknown"
+
+    # (title, author) must be unique — reject duplicates up front (case- and
+    # whitespace-insensitive) so we never start ingesting a book we'd refuse.
+    duplicate = store.conn.execute(
+        "SELECT 1 FROM books "
+        "WHERE lower(trim(title)) = lower(?) AND lower(trim(author)) = lower(?)",
+        (title, author),
+    ).fetchone()
+    if duplicate is not None:
+        raise HTTPException(
+            409, f"A book titled '{title}' by {author} already exists."
+        )
+
     raw = await file.read()
     try:
         html = raw.decode("utf-8")
@@ -173,7 +188,7 @@ async def upload_book(
     _spawn(
         _run_ingest_job(
             job.id, jobs, store, settings,
-            html=html, title=title, author=author.strip() or "Unknown",
+            html=html, title=title, author=author,
         )
     )
     return _job_status(job)

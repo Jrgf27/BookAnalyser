@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS books (
     key         TEXT    NOT NULL UNIQUE,   -- short slug: 'lw', 'pp'
     word_count  INTEGER NOT NULL DEFAULT 0,
     chapter_count INTEGER NOT NULL DEFAULT 0,
-    summary     TEXT
+    summary     TEXT,
+    ready       INTEGER NOT NULL DEFAULT 0,  -- 1 only after full ingestion
+    UNIQUE(title, author)                    -- no two books with the same title+author
 );
 
 CREATE TABLE IF NOT EXISTS chapters (

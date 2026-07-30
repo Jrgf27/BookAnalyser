@@ -45,9 +45,44 @@ class SqliteChunkStore:
 
         # Apply schema
         self.conn.executescript(_SCHEMA_SQL)
+        self._migrate()
 
         # Create vec0 table (must happen after extension load)
         self._ensure_vec_table()
+
+    def _migrate(self) -> None:
+        """Idempotent schema migrations for pre-existing databases."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(books)")}
+        if "ready" not in cols:
+            # `ready` flips to 1 only when ingestion fully completes; books mid
+            # -ingest (or left partial by a crash) stay 0 and are hidden/cleaned.
+            self.conn.execute(
+                "ALTER TABLE books ADD COLUMN ready INTEGER NOT NULL DEFAULT 0"
+            )
+            # Rows that predate the column were fully ingested → mark them ready.
+            self.conn.execute("UPDATE books SET ready = 1")
+            self.conn.commit()
+
+    def mark_ready(self, book_id: int) -> None:
+        """Flag a book as fully ingested (visible to the API/agent)."""
+        self.conn.execute("UPDATE books SET ready = 1 WHERE id = ?", (book_id,))
+        self.conn.commit()
+
+    def cleanup_incomplete(self) -> int:
+        """Drop books never marked ready — partials left by a crash/restart.
+
+        Returns the number removed.  Called on startup so a killed ingest never
+        leaves a half-built book in the library.
+        """
+        ids = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM books WHERE ready = 0"
+            ).fetchall()
+        ]
+        for book_id in ids:
+            self.drop_book(book_id)
+        return len(ids)
 
     def _ensure_vec_table(self) -> None:
         # Check if table already exists

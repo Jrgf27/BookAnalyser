@@ -1,67 +1,53 @@
 import React, { useRef, useState } from 'react';
 import type { BookMeta, IngestJobStatus } from '../types';
-import { uploadBook, deleteBook, fetchIngestJob } from '../api';
+import { deleteBook } from '../api';
 
 interface Props {
   books: BookMeta[];
+  job: IngestJobStatus | null;   // active ingestion, owned by App
+  error: string | null;          // ingestion error, owned by App
+  onUpload: (file: File, title: string, author: string) => Promise<boolean>;
   onClose: () => void;
-  onChanged: () => void; // refresh the book list after add/remove
+  onChanged: () => void; // refresh the book list after delete
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-export default function BookManager({ books, onClose, onChanged }: Props) {
+export default function BookManager({
+  books,
+  job,
+  error,
+  onUpload,
+  onClose,
+  onChanged,
+}: Props) {
   const [title, setTitle] = useState('');
   const [author, setAuthor] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [job, setJob] = useState<IngestJobStatus | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // An ingestion is in flight (started here or in a previous open of the modal).
+  const busy = job !== null;
   const canUpload = !!file && !!title.trim() && !busy;
 
   const handleUpload = async () => {
-    if (!file || !title.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      let status = await uploadBook(file, title.trim(), author.trim());
-      setJob(status);
-      // Poll until the background job finishes.
-      while (status.status !== 'done' && status.status !== 'error') {
-        await sleep(800);
-        status = await fetchIngestJob(status.id);
-        setJob(status);
-      }
-      if (status.status === 'error') {
-        throw new Error(status.error || 'Ingestion failed');
-      }
+    if (!file || !title.trim() || busy) return;
+    const ok = await onUpload(file, title.trim(), author.trim());
+    if (ok) {
       setTitle('');
       setAuthor('');
       setFile(null);
       if (fileRef.current) fileRef.current.value = '';
-      setJob(null);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
-      setJob(null);
-    } finally {
-      setBusy(false);
     }
   };
 
   const handleDelete = async (b: BookMeta) => {
     if (!window.confirm(`Remove "${b.title}" from the library?`)) return;
-    setBusy(true);
-    setError(null);
+    setDeleteError(null);
     try {
       await deleteBook(b.id);
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
-    } finally {
-      setBusy(false);
+      setDeleteError(err instanceof Error ? err.message : 'Delete failed');
     }
   };
 
@@ -97,9 +83,9 @@ export default function BookManager({ books, onClose, onChanged }: Props) {
           </button>
         </div>
 
-        {error && (
+        {(error || deleteError) && (
           <div style={{ background: '#ffebee', color: '#c62828', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
-            {error}
+            {error || deleteError}
           </div>
         )}
 

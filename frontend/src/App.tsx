@@ -1,18 +1,29 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import type { BookMeta, ChatResponse, SessionMeta, StoredMessage } from './types';
+import { useState, useEffect, useCallback } from 'react';
+import type {
+  BookMeta,
+  ChatResponse,
+  IngestJobStatus,
+  SessionMeta,
+  StoredMessage,
+} from './types';
 import {
   fetchBooks,
   fetchSessions,
   fetchSession,
   renameSession,
   deleteSession,
+  uploadBook,
+  fetchIngestJob,
 } from './api';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 import ChatPane from './components/ChatPane';
 import Sidebar from './components/Sidebar';
 import SourceDrawer from './components/SourceDrawer';
 import ScopeSelector from './components/ScopeSelector';
 import TracePanel from './components/TracePanel';
 import BookManager from './components/BookManager';
+import OutlineView from './components/OutlineView';
 
 export default function App() {
   const [books, setBooks] = useState<BookMeta[]>([]);
@@ -25,6 +36,10 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [initialMessages, setInitialMessages] = useState<StoredMessage[]>([]);
   const [showBookManager, setShowBookManager] = useState(false);
+  // Ingestion job lives here (not in the modal) so its progress survives the
+  // modal being closed and reopened while a book is still ingesting.
+  const [ingestJob, setIngestJob] = useState<IngestJobStatus | null>(null);
+  const [ingestError, setIngestError] = useState<string | null>(null);
   // Mount key for ChatPane. Changes only on explicit New-chat / session-select —
   // NOT when the server assigns an id mid-stream, so an in-flight turn survives.
   const [chatKey, setChatKey] = useState('new-0');
@@ -32,6 +47,40 @@ export default function App() {
   const refreshBooks = useCallback(() => {
     fetchBooks().then(setBooks).catch(console.error);
   }, []);
+
+  // Upload + poll to completion. Returns whether it succeeded so the modal can
+  // clear its form; runs to completion regardless of whether the modal is open.
+  const startIngest = useCallback(
+    async (file: File, title: string, author: string): Promise<boolean> => {
+      setIngestError(null);
+      let status: IngestJobStatus;
+      try {
+        status = await uploadBook(file, title, author);
+      } catch (err) {
+        setIngestError(err instanceof Error ? err.message : 'Upload failed');
+        return false;
+      }
+      setIngestJob(status);
+      try {
+        while (status.status !== 'done' && status.status !== 'error') {
+          await sleep(800);
+          status = await fetchIngestJob(status.id);
+          setIngestJob(status);
+        }
+        if (status.status === 'error') {
+          throw new Error(status.error || 'Ingestion failed');
+        }
+        return true;
+      } catch (err) {
+        setIngestError(err instanceof Error ? err.message : 'Ingestion failed');
+        return false;
+      } finally {
+        setIngestJob(null);
+        refreshBooks();
+      }
+    },
+    [refreshBooks],
+  );
 
   const refreshSessions = useCallback(() => {
     fetchSessions().then(setSessions).catch(console.error);
@@ -141,11 +190,14 @@ export default function App() {
                 onClose={() => setDrawerChunkId(null)}
               />
             ) : lastResponse?.trace.length ? (
-              <TracePanel trace={lastResponse.trace} />
+              <TracePanel trace={lastResponse.trace} books={books} />
+            ) : selectedBookId !== null && scopedBooks[0] ? (
+              <OutlineView book={scopedBooks[0]} />
             ) : (
               <div style={{ padding: 24, color: '#555' }}>
                 <p style={{ marginBottom: 16, color: '#888' }}>
-                  Click a citation to view source context, or ask a question to get started.
+                  Click a citation to view source context, ask a question, or pick a
+                  single book above to see its chapter outline.
                 </p>
                 {scopedBooks.map((b) => (
                   <div key={b.id} style={{ marginBottom: 20 }}>
@@ -167,6 +219,9 @@ export default function App() {
       {showBookManager && (
         <BookManager
           books={books}
+          job={ingestJob}
+          error={ingestError}
+          onUpload={startIngest}
           onClose={() => setShowBookManager(false)}
           onChanged={refreshBooks}
         />

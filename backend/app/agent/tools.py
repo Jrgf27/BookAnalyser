@@ -132,7 +132,8 @@ async def dispatch_tool(
 
     if name == "list_books":
         rows = store.conn.execute(
-            "SELECT id, title, author, key, word_count, chapter_count, summary FROM books"
+            "SELECT id, title, author, key, word_count, chapter_count, summary "
+            "FROM books WHERE ready = 1"
         ).fetchall()
         result = [dict(r) for r in rows]
 

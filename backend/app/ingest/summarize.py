@@ -29,16 +29,30 @@ Focus on the main plot arc, central themes, and key characters."""
 
 async def _summarize_one_chapter(
     chapter_id: int,
+    chapter_number: int,
     chapter_text: str,
     settings: Settings,
     semaphore: asyncio.Semaphore,
-) -> tuple[int, str]:
-    """Summarize a single chapter, throttled by semaphore."""
+) -> tuple[int, str | None]:
+    """Summarize a single chapter, throttled by semaphore.
+
+    Summaries are non-essential (search and chat work without them), so a
+    failure — e.g. an Azure content-filter rejection on a chapter's text — must
+    not abort the whole ingest.  On error we log and return ``None``.
+    """
     async with semaphore:
         # Truncate very long chapters to avoid token limits
         if len(chapter_text) > 15_000:
             chapter_text = chapter_text[:15_000] + "\n\n[...truncated...]"
-        summary = await summarize_text(chapter_text, CHAPTER_SUMMARY_PROMPT, settings)
+        try:
+            summary = await summarize_text(chapter_text, CHAPTER_SUMMARY_PROMPT, settings)
+        except Exception as exc:  # content filter, rate limit exhaustion, etc.
+            # Log the human chapter number, not the global row id.
+            logger.warning(
+                "Chapter %d (id %d) summary skipped: %s",
+                chapter_number, chapter_id, exc,
+            )
+            return chapter_id, None
         return chapter_id, summary
 
 
@@ -57,7 +71,8 @@ async def summarize_chapters(
 
     # Summarize all chapters concurrently (bounded)
     tasks = [
-        _summarize_one_chapter(r["id"], r["text"], settings, semaphore) for r in rows
+        _summarize_one_chapter(r["id"], r["number"], r["text"], settings, semaphore)
+        for r in rows
     ]
     results = await asyncio.gather(*tasks)
 
@@ -78,7 +93,12 @@ async def summarize_chapters(
     combined = "\n".join(
         f"Chapter {r['number']}: {r['summary']}" for r in chapter_summaries if r["summary"]
     )
-    book_summary = await summarize_text(combined, BOOK_SUMMARY_PROMPT, settings)
+    book_summary: str | None = None
+    if combined.strip():
+        try:
+            book_summary = await summarize_text(combined, BOOK_SUMMARY_PROMPT, settings)
+        except Exception as exc:  # best-effort, like the per-chapter summaries
+            logger.warning("Book %d summary skipped: %s", book_id, exc)
     store.conn.execute(
         "UPDATE books SET summary = ? WHERE id = ?", (book_summary, book_id)
     )

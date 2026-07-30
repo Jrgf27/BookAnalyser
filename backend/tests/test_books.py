@@ -46,6 +46,23 @@ class TestParseHtml:
     def test_empty_html_yields_nothing(self) -> None:
         assert GutenbergParser().parse_html("<html></html>", book_key="x") == []
 
+    def test_collapses_source_line_wraps(self) -> None:
+        # Gutenberg wraps paragraph text with hard newlines mid-sentence; those
+        # must collapse to spaces, while the paragraph break survives.
+        html = (
+            "<h2>CHAPTER I.</h2>"
+            "<p>His character was decided.\nHe was the proudest,\nmost "
+            "disagreeable man</p>"
+            "<p>Elizabeth Bennet had been\nobliged to sit down.</p>"
+        )
+        chapters = GutenbergParser().parse_html(html, book_key="x")
+        text = chapters[0]["text"]
+        assert "decided. He was the proudest, most disagreeable man" in text
+        assert "\n\n" in text  # paragraph break preserved
+        # No hard-wrap newline survives inside a paragraph.
+        for para in text.split("\n\n"):
+            assert "\n" not in para
+
 
 # ---- Slug helpers ----
 
@@ -97,10 +114,11 @@ class TestIngestPipeline:
             )
         )
         book = store.conn.execute(
-            "SELECT chapter_count, summary FROM books WHERE id = ?", (book_id,)
+            "SELECT chapter_count, summary, ready FROM books WHERE id = ?", (book_id,)
         ).fetchone()
         assert book["chapter_count"] == 2
         assert book["summary"] == "mock"
+        assert book["ready"] == 1  # flipped ready only after full ingestion
         n_chunks = store.conn.execute(
             "SELECT COUNT(*) AS n FROM chunks WHERE book_id = ?", (book_id,)
         ).fetchone()["n"]
@@ -127,11 +145,16 @@ class TestIngestPipeline:
 
 
 class TestBookEndpoints:
-    def test_get_books_returns_summary(self, tmp_path) -> None:
+    def test_get_books_returns_only_ready(self, tmp_path) -> None:
         store = _store(tmp_path)
         store.conn.execute(
-            "INSERT INTO books (title,author,key,word_count,chapter_count,summary) "
-            "VALUES ('T','A','t',1,1,'A short summary')"
+            "INSERT INTO books (title,author,key,word_count,chapter_count,summary,ready) "
+            "VALUES ('Ready','A','r',1,1,'A short summary',1)"
+        )
+        # A half-ingested book (ready=0) must not surface in the library.
+        store.conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count,ready) "
+            "VALUES ('Partial','A','p',1,1,0)"
         )
         store.conn.commit()
         app.dependency_overrides[get_store] = lambda: store
@@ -139,6 +162,8 @@ class TestBookEndpoints:
         try:
             resp = client.get("/books")
             assert resp.status_code == 200
+            titles = [b["title"] for b in resp.json()]
+            assert titles == ["Ready"]
             assert resp.json()[0]["summary"] == "A short summary"
         finally:
             app.dependency_overrides.clear()
@@ -188,6 +213,38 @@ class TestBookEndpoints:
             assert status.json()["id"] == job_id
             # Unknown job → 404.
             assert client.get("/books/jobs/nope").status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            store.close()
+
+    def test_upload_rejects_duplicate_title_author(self, tmp_path, monkeypatch) -> None:
+        store = _store(tmp_path)
+        store.conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count) "
+            "VALUES ('Moby Dick','Herman Melville','mobydick',1,1)"
+        )
+        store.conn.commit()
+        monkeypatch.setattr(books_api, "_spawn", lambda coro: coro.close())
+        app.dependency_overrides[get_store] = lambda: store
+        app.dependency_overrides[get_settings] = lambda: _settings()
+        app.dependency_overrides[get_jobs] = lambda: JobRegistry()
+        client = TestClient(app)
+        try:
+            # Same title/author, differing case + whitespace → still a duplicate.
+            resp = client.post(
+                "/books",
+                files={"file": ("b.html", b"<html></html>", "text/html")},
+                data={"title": "  moby dick ", "author": "HERMAN MELVILLE"},
+            )
+            assert resp.status_code == 409
+
+            # A different author is allowed.
+            monkeyfree = client.post(
+                "/books",
+                files={"file": ("b.html", b"<html></html>", "text/html")},
+                data={"title": "Moby Dick", "author": "Someone Else"},
+            )
+            assert monkeyfree.status_code == 200
         finally:
             app.dependency_overrides.clear()
             store.close()

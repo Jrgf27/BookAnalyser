@@ -30,6 +30,13 @@ ROMAN_VALUES = {
 }
 
 
+def _normalize_ws(text: str) -> str:
+    """Collapse whitespace runs (incl. the source file's line-wrap newlines)
+    into single spaces, so a paragraph reads as continuous prose rather than
+    inheriting the HTML's ~70-char hard wraps."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def roman_to_int(s: str) -> int:
     """Convert a Roman numeral string to integer."""
     s = s.upper().strip().rstrip(".")
@@ -121,7 +128,16 @@ class GutenbergParser:
         # Fallback for HTML with no recognisable chapter headings: treat the
         # whole document as a single chapter so any upload still ingests.
         if not chapters:
-            text = soup.get_text("\n", strip=True)
+            paragraphs = [
+                _normalize_ws(p.get_text(" ", strip=True))
+                for p in soup.find_all("p")
+            ]
+            paragraphs = [p for p in paragraphs if p]
+            text = (
+                "\n\n".join(paragraphs)
+                if paragraphs
+                else _normalize_ws(soup.get_text(" ", strip=True))
+            )
             if text.strip():
                 logger.info("No chapter headings in %s; using single-chapter fallback", book_key)
                 chapters = [{
@@ -177,7 +193,9 @@ class GutenbergParser:
                 if node is stop_heading:
                     break
                 if isinstance(node, Tag):
-                    parts.append(node.get_text(" ", strip=True))
+                    # Each block becomes one paragraph; collapse its internal
+                    # source-line newlines so it reads as continuous prose.
+                    parts.append(_normalize_ws(node.get_text(" ", strip=True)))
                 node = node.find_next_sibling()
 
             text = "\n\n".join(p for p in parts if p)

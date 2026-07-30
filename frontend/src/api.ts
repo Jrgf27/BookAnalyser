@@ -13,11 +13,31 @@ import type {
 
 const BASE = '/api';
 
+/**
+ * Error carrying the HTTP status and a human-readable message. Prefers
+ * FastAPI's `detail` field over the raw JSON body, so UI can show something
+ * sensible instead of a serialized error object.
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, body: string) {
+    let message = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed.detail === 'string') message = parsed.detail;
+    } catch {
+      // body wasn't JSON — keep it as-is
+    }
+    super(message || `Request failed (${status})`);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, init);
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`API ${res.status}: ${body}`);
+    throw new ApiError(res.status, await res.text());
   }
   return res.json() as Promise<T>;
 }
@@ -47,7 +67,7 @@ export async function uploadBook(
   // No Content-Type header: the browser sets the multipart boundary itself.
   const res = await fetch(`${BASE}/books`, { method: 'POST', body: form });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${await res.text()}`);
+    throw new ApiError(res.status, await res.text());
   }
   return res.json() as Promise<IngestJobStatus>;
 }
@@ -102,8 +122,7 @@ export async function sendChatStream(
     signal,
   });
   if (!res.ok || !res.body) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`API ${res.status}: ${body}`);
+    throw new ApiError(res.status, await res.text().catch(() => ''));
   }
 
   const reader = res.body.getReader();

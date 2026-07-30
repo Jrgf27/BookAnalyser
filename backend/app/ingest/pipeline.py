@@ -82,6 +82,19 @@ def _prepare_book(
     return book_id, all_chunks
 
 
+def _drop_by_key(store: SqliteChunkStore, key: str) -> None:
+    """Remove any book (and its chapters/chunks/vectors) with this key.
+
+    Used to clean up a partially-ingested book when a later stage fails, so a
+    failed upload never leaves a half-built book visible in the library.
+    """
+    row = store.conn.execute(
+        "SELECT id FROM books WHERE key = ?", (key,)
+    ).fetchone()
+    if row is not None:
+        store.drop_book(row["id"])
+
+
 def _store_embeddings(
     store: SqliteChunkStore,
     book_id: int,
@@ -124,33 +137,48 @@ async def ingest_book_html(
     report("parsing", 0.03, "Parsing HTML")
     chapters = await asyncio.to_thread(GutenbergParser().parse_html, html, key)
     if not chapters:
+        # Nothing was written yet, so no cleanup needed.
         raise ValueError("No text could be parsed from the provided HTML.")
     logger.info("Parsed %d chapters for %s", len(chapters), title)
 
-    report("chunking", 0.08, "Chunking text")
-    book_id, all_chunks = await asyncio.to_thread(
-        _prepare_book, store, settings, chapters, key, title, author
-    )
-    logger.info("Created %d chunks; embedding…", len(all_chunks))
-    report("chunking", 0.1, f"{len(all_chunks)} chunks")
+    # Everything past here writes to the DB; if any stage fails, drop the
+    # partial book so the library never shows a half-ingested title.
+    try:
+        report("chunking", 0.08, "Chunking text")
+        book_id, all_chunks = await asyncio.to_thread(
+            _prepare_book, store, settings, chapters, key, title, author
+        )
+        logger.info("Created %d chunks; embedding…", len(all_chunks))
+        report("chunking", 0.1, f"{len(all_chunks)} chunks")
 
-    texts = [c["text"] for c in all_chunks]
+        texts = [c["text"] for c in all_chunks]
 
-    # Embedding is the bulk of the work → report per-batch, mapped onto 0.1–0.75.
-    def on_batch(done: int, total: int) -> None:
-        frac = done / total if total else 1.0
-        report("embedding", 0.1 + 0.65 * frac, f"Embedding {done}/{total} chunks")
+        # Embedding is the bulk of the work → per-batch progress, mapped 0.1–0.75.
+        def on_batch(done: int, total: int) -> None:
+            frac = done / total if total else 1.0
+            report("embedding", 0.1 + 0.65 * frac, f"Embedding {done}/{total} chunks")
 
-    embeddings = (
-        await get_embeddings_batched(texts, settings, on_batch=on_batch)
-        if texts
-        else []
-    )
+        embeddings = (
+            await get_embeddings_batched(texts, settings, on_batch=on_batch)
+            if texts
+            else []
+        )
 
-    await asyncio.to_thread(_store_embeddings, store, book_id, all_chunks, embeddings)
+        await asyncio.to_thread(
+            _store_embeddings, store, book_id, all_chunks, embeddings
+        )
 
-    report("summarizing", 0.8, "Summarizing chapters")
-    await summarize_chapters(store, book_id, settings)
+        report("summarizing", 0.8, "Summarizing chapters")
+        await summarize_chapters(store, book_id, settings)
+
+        # Flip the book to "ready" only now that everything succeeded, so a
+        # crash before this point leaves it hidden and sweepable on restart.
+        await asyncio.to_thread(store.mark_ready, book_id)
+    except Exception:
+        logger.exception("Ingest failed for %s; removing partial data", key)
+        await asyncio.to_thread(_drop_by_key, store, key)
+        raise
+
     report("done", 1.0, "Complete")
     logger.info("Ingested %s (id=%d)", title, book_id)
     return book_id

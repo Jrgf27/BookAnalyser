@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { fetchChunk } from '../api';
+import { fetchChunk, ApiError } from '../api';
 
 interface Props {
   chunkId: number;
@@ -53,7 +53,15 @@ export default function SourceDrawer({ chunkId, onClose }: Props) {
     setError(null);
     fetchChunk(chunkId, 2)
       .then((data) => setChunk(data as unknown as ChunkWithContext))
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 404) {
+          setError(
+            'This passage is no longer available. The book it came from may have been removed from the library.',
+          );
+        } else {
+          setError("Sorry, this source couldn't be loaded. Please try again.");
+        }
+      });
   }, [chunkId]);
 
   return (
@@ -70,7 +78,21 @@ export default function SourceDrawer({ chunkId, onClose }: Props) {
         </button>
       </div>
 
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {error && (
+        <div
+          style={{
+            background: '#f5f5f5',
+            border: '1px solid #e0e0e0',
+            borderRadius: 8,
+            padding: 12,
+            color: '#666',
+            fontSize: 14,
+            lineHeight: 1.5,
+          }}
+        >
+          {error}
+        </div>
+      )}
 
       {chunk && (
         <>

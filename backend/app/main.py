@@ -1,5 +1,6 @@
 """FastAPI application — router mounting, DI wiring, lifespan."""
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -17,6 +18,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open the stores on startup, close on shutdown."""
     settings = get_settings()
     store = SqliteChunkStore(settings.database_path, embedding_dim=settings.embedding_dimensions)
+    # Remove any book left half-ingested by a crash/restart before serving.
+    removed = store.cleanup_incomplete()
+    if removed:
+        logging.getLogger(__name__).info("Removed %d incomplete book(s) on startup", removed)
     session_store = SessionStore(settings.sessions_database_path)
     app.state.store = store
     app.state.session_store = session_store

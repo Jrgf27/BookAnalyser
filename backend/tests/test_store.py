@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from app.store.sqlite_store import SqliteChunkStore
@@ -129,3 +131,63 @@ class TestSqliteChunkStore:
         ids, matrix = store.all_embeddings(1)
         assert len(ids) == 1
         assert matrix.shape == (1, 3072)
+
+
+class TestReadiness:
+    def _store(self, tmp_path) -> SqliteChunkStore:
+        return SqliteChunkStore(tmp_path / "r.db", embedding_dim=8)
+
+    def test_mark_ready(self, tmp_path) -> None:
+        s = self._store(tmp_path)
+        s.conn.execute(
+            "INSERT INTO books (id,title,author,key,word_count,chapter_count) "
+            "VALUES (1,'T','A','t',1,1)"
+        )
+        s.conn.commit()
+        assert s.conn.execute("SELECT ready FROM books WHERE id=1").fetchone()["ready"] == 0
+        s.mark_ready(1)
+        assert s.conn.execute("SELECT ready FROM books WHERE id=1").fetchone()["ready"] == 1
+        s.close()
+
+    def test_cleanup_incomplete_drops_only_unready(self, tmp_path) -> None:
+        s = self._store(tmp_path)
+        s.conn.executescript(
+            "INSERT INTO books (id,title,author,key,word_count,chapter_count,ready) "
+            "VALUES (1,'Done','A','d',1,1,1),(2,'Partial','A','p',1,1,0);"
+            "INSERT INTO chapters (id,book_id,number,title,text,word_count) "
+            "VALUES (1,2,1,'c','t',1);"
+        )
+        s.conn.commit()
+        removed = s.cleanup_incomplete()
+        assert removed == 1
+        remaining = [r["title"] for r in s.conn.execute("SELECT title FROM books")]
+        assert remaining == ["Done"]
+        # The partial book's chapters went too.
+        assert s.conn.execute(
+            "SELECT COUNT(*) AS n FROM chapters WHERE book_id=2"
+        ).fetchone()["n"] == 0
+        s.close()
+
+    def test_migration_adds_ready_and_marks_existing(self, tmp_path) -> None:
+        # Simulate a pre-`ready` database (old schema, no column).
+        path = tmp_path / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author TEXT, "
+            "key TEXT, word_count INTEGER, chapter_count INTEGER, summary TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count) "
+            "VALUES ('Old','A','o',1,1)"
+        )
+        conn.commit()
+        conn.close()
+
+        s = SqliteChunkStore(path, embedding_dim=8)
+        cols = {r[1] for r in s.conn.execute("PRAGMA table_info(books)")}
+        assert "ready" in cols
+        # Pre-existing rows are assumed complete → marked ready.
+        assert s.conn.execute(
+            "SELECT ready FROM books WHERE key='o'"
+        ).fetchone()["ready"] == 1
+        s.close()
