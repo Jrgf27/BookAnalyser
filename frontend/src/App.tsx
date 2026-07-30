@@ -30,7 +30,15 @@ export default function App() {
   const [books, setBooks] = useState<BookMeta[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<number | null>(null);
   const [drawerChunkId, setDrawerChunkId] = useState<number | null>(null);
+  // Bumped on every citation click so the drawer refetches even when the same
+  // citation is clicked twice (e.g. after restoring a book it now exists again).
+  const [drawerNonce, setDrawerNonce] = useState(0);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
+
+  const openCitation = (chunkId: number) => {
+    setDrawerChunkId(chunkId);
+    setDrawerNonce((n) => n + 1);
+  };
 
   // Session state
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
@@ -189,7 +197,7 @@ export default function App() {
               sessionId={activeSessionId}
               initialMessages={initialMessages}
               bookId={selectedBookId}
-              onCitationClick={setDrawerChunkId}
+              onCitationClick={openCitation}
               onResponse={setLastResponse}
               onSessionCreated={handleSessionCreated}
               onTurnComplete={refreshSessions}
@@ -199,6 +207,7 @@ export default function App() {
           <div style={{ width: 400, borderLeft: '1px solid #e0e0e0', overflow: 'auto' }}>
             {drawerChunkId !== null ? (
               <SourceDrawer
+                key={drawerNonce}
                 chunkId={drawerChunkId}
                 onClose={() => setDrawerChunkId(null)}
               />

@@ -46,6 +46,32 @@ class TestParseHtml:
     def test_empty_html_yields_nothing(self) -> None:
         assert GutenbergParser().parse_html("<html></html>", book_key="x") == []
 
+    def test_strips_illustration_captions_and_copyright(self) -> None:
+        # A figure block (image + caption quote + copyright) sits between two
+        # real paragraphs; only the real text should survive.
+        html = (
+            "<h2>CHAPTER I.</h2>"
+            "<p>It is a truth universally acknowledged.</p>"
+            '<div class="figcenter"><img src="i.jpg" alt="">'
+            '<div class="caption"><p>“He came down to see the place”</p>'
+            "<p>[<i>Copyright 1894 by George Allen.</i>]</p></div></div>"
+            "<p>However little known the feelings.</p>"
+        )
+        text = GutenbergParser().parse_html(html, book_key="x")[0]["text"]
+        assert "truth universally acknowledged" in text
+        assert "However little known" in text
+        assert "Copyright" not in text
+        assert "came down to see the place" not in text
+
+    def test_preserves_block_quotations(self) -> None:
+        # blockquot is used for real letters — it must NOT be stripped.
+        html = (
+            "<h2>CHAPTER I.</h2>"
+            '<div class="blockquot"><p>Dear Sir, I write to inform you.</p></div>'
+        )
+        text = GutenbergParser().parse_html(html, book_key="x")[0]["text"]
+        assert "Dear Sir, I write to inform you." in text
+
     def test_collapses_source_line_wraps(self) -> None:
         # Gutenberg wraps paragraph text with hard newlines mid-sentence; those
         # must collapse to spaces, while the paragraph break survives.

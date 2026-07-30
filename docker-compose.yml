@@ -10,7 +10,10 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      # Don't count failures while the app is still booting (imports, DB open,
+      # first-run warmup); the container stays "starting" until this elapses.
+      start_period: 60s
 
   frontend:
     build: ./frontend

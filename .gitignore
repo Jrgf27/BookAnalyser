@@ -15,10 +15,12 @@ frontend/dist/
 # ---------- Data ----------
 # Built artifact — rebuild via: python -m app.ingest
 data/books.db
+data/books.db-shm
 data/books.db-journal
 data/books.db-wal
 # Durable chat history (user data, created at runtime)
 data/sessions.db
+data/sessions.db-shm
 data/sessions.db-journal
 data/sessions.db-wal
 

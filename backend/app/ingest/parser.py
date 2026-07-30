@@ -30,10 +30,17 @@ ROMAN_VALUES = {
 }
 
 
+# Belt-and-suspenders removal of bracketed illustration/copyright notes that
+# survive structural stripping (e.g. "[Copyright 1894 by George Allen.]").
+_ARTIFACT_RE = re.compile(r"\[\s*(?:copyright|illustration)[^\]]*\]", re.IGNORECASE)
+
+
 def _normalize_ws(text: str) -> str:
     """Collapse whitespace runs (incl. the source file's line-wrap newlines)
     into single spaces, so a paragraph reads as continuous prose rather than
-    inheriting the HTML's ~70-char hard wraps."""
+    inheriting the HTML's ~70-char hard wraps. Also drops any stray bracketed
+    copyright/illustration note left behind."""
+    text = _ARTIFACT_RE.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -113,6 +120,15 @@ class GutenbergParser:
         # which otherwise leak mid-sentence into chapter text — "no new {4}
         # comers" — polluting chunks, embeddings, and the citation drawer.
         for el in soup.select("span.pagenum, .pagenum"):
+            el.decompose()
+
+        # Strip illustration figures and their captions/copyright lines. Both
+        # editions wrap illustrations in .figcenter/.figleft containing an <img>
+        # and a .caption (P&P: <div class="caption"> with a quote + a
+        # "[Copyright 1894 by George Allen.]" line; LW: <span class="caption">).
+        # These are figure artifacts, not reading text. Note: `.blockquot` is
+        # deliberately NOT stripped — P&P uses it for real letters.
+        for el in soup.select(".figcenter, .figleft, .caption, figure, figcaption, img"):
             el.decompose()
 
         # Unwrap drop-cap spans (some editions use <span class="letra">)
