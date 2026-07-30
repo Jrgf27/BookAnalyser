@@ -8,6 +8,7 @@ interface Props {
   onNew: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onImport: (file: File) => void;
 }
 
 export default function Sidebar({
@@ -17,7 +18,13 @@ export default function Sidebar({
   onNew,
   onRename,
   onDelete,
+  onImport,
 }: Props) {
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (f) onImport(f);
+  };
   return (
     <div
       style={{
@@ -29,19 +36,36 @@ export default function Sidebar({
       }}
     >
       <div style={{ padding: 12 }}>
-        <button
-          onClick={onNew}
+        <div
           style={{
-            width: '100%',
-            padding: '8px 12px',
-            borderRadius: 6,
-            border: '1px solid #1976d2',
-            background: '#1976d2',
-            color: '#fff',
-            cursor: 'pointer',
-            fontSize: 14,
+            display: 'flex',
+            gap: 8,
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            paddingBottom: 12,
+            marginBottom: 12,
+            borderBottom: '1px solid #e4e4e4',
           }}
         >
+          <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: '#999' }}>
+            Chat history
+          </span>
+          <span style={{ display: 'flex', gap: 4 }}>
+            <a
+              href="/api/export/sessions.db"
+              download
+              title="Download your chat history (sessions.db)"
+              style={ghostBtn}
+            >
+              ↓ Export
+            </a>
+            <label title="Restore chat history from a sessions.db file" style={ghostBtn}>
+              ↑ Import
+              <input type="file" accept=".db,application/x-sqlite3" onChange={handleImport} hidden />
+            </label>
+          </span>
+        </div>
+        <button onClick={onNew} style={newChatBtn}>
           + New chat
         </button>
       </div>
@@ -118,4 +142,26 @@ const iconBtn: React.CSSProperties = {
   fontSize: 13,
   padding: '2px 4px',
   lineHeight: 1,
+};
+
+const ghostBtn: React.CSSProperties = {
+  fontSize: 12,
+  color: '#1976d2',
+  textDecoration: 'none',
+  cursor: 'pointer',
+  padding: '2px 6px',
+  borderRadius: 4,
+  whiteSpace: 'nowrap',
+};
+
+const newChatBtn: React.CSSProperties = {
+  width: '100%',
+  padding: '9px 12px',
+  borderRadius: 6,
+  border: 'none',
+  background: '#1976d2',
+  color: '#fff',
+  cursor: 'pointer',
+  fontSize: 14,
+  fontWeight: 500,
 };

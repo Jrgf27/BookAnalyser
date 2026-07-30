@@ -168,6 +168,32 @@ class TestReadiness:
         ).fetchone()["n"] == 0
         s.close()
 
+    def test_restore_from_replaces_contents(self, tmp_path) -> None:
+        # Source store with a book → snapshot → restore into an empty store.
+        src = self._store(tmp_path)
+        src.conn.execute(
+            "INSERT INTO books (title,author,key,word_count,chapter_count,ready) "
+            "VALUES ('Imported','A','imp',1,1,1)"
+        )
+        src.conn.commit()
+        snap = tmp_path / "snap.db"
+        dst = sqlite3.connect(snap)
+        with dst:
+            src.conn.backup(dst)
+        dst.close()
+
+        live = SqliteChunkStore(tmp_path / "live.db", embedding_dim=8)
+        assert live.conn.execute("SELECT COUNT(*) AS n FROM books").fetchone()["n"] == 0
+        live.restore_from(snap)
+        titles = [r["title"] for r in live.conn.execute("SELECT title FROM books")]
+        assert titles == ["Imported"]
+        # Vector table still present after restore.
+        assert live.conn.execute(
+            "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='chunks_vec'"
+        ).fetchone()["n"] == 1
+        src.close()
+        live.close()
+
     def test_migration_adds_ready_and_marks_existing(self, tmp_path) -> None:
         # Simulate a pre-`ready` database (old schema, no column).
         path = tmp_path / "old.db"

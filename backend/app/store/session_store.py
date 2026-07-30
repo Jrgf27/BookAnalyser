@@ -48,6 +48,16 @@ class SessionStore:
         self.conn.execute("PRAGMA foreign_keys=ON")  # enforce ON DELETE CASCADE
         self.conn.executescript(_SCHEMA_SQL)
 
+    def restore_from(self, src_path: Path | str) -> None:
+        """Replace this database's contents with an uploaded snapshot."""
+        src = sqlite3.connect(str(src_path))
+        try:
+            src.backup(self.conn)  # atomically overwrite the live DB
+        finally:
+            src.close()
+        # Ensure tables/indexes exist (harmless no-ops for a well-formed export).
+        self.conn.executescript(_SCHEMA_SQL)
+
     # ---- sessions ----
 
     def create_session(self, *, title: str, book_id: int | None = None) -> str:

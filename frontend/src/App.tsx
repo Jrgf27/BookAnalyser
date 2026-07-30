@@ -14,6 +14,7 @@ import {
   deleteSession,
   uploadBook,
   fetchIngestJob,
+  importSessionsDb,
 } from './api';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -131,6 +132,17 @@ export default function App() {
     refreshSessions();
   };
 
+  const importSessions = async (file: File) => {
+    if (!window.confirm('This replaces your entire chat history with the uploaded database. Continue?')) return;
+    try {
+      await importSessionsDb(file);
+      startNewChat();     // the current session may no longer exist
+      refreshSessions();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Import failed');
+    }
+  };
+
   // If the currently-scoped book was removed, fall back to "All books".
   useEffect(() => {
     if (selectedBookId !== null && !books.some((b) => b.id === selectedBookId)) {
@@ -151,6 +163,7 @@ export default function App() {
         onNew={startNewChat}
         onRename={handleRename}
         onDelete={handleDelete}
+        onImport={importSessions}
       />
 
       <div style={{ display: 'flex', height: '100vh', flexDirection: 'column', flex: 1 }}>

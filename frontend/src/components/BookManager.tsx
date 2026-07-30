@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import type { BookMeta, IngestJobStatus } from '../types';
-import { deleteBook } from '../api';
+import { deleteBook, importBooksDb } from '../api';
 
 interface Props {
   books: BookMeta[];
@@ -48,6 +48,20 @@ export default function BookManager({
       onChanged();
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : 'Delete failed');
+    }
+  };
+
+  const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!window.confirm('This replaces your entire current library with the uploaded database. Continue?')) return;
+    setDeleteError(null);
+    try {
+      await importBooksDb(f);
+      onChanged();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Restore failed');
     }
   };
 
@@ -176,10 +190,39 @@ export default function BookManager({
             </div>
           )}
         </div>
+
+        {/* Backup / restore */}
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: '24px 0 4px' }}>Back up your library</h3>
+        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+          Download your book database to keep it, or restore one you saved earlier.
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a href="/api/export/books.db" download style={secondaryBtn}>
+            ↓ Download
+          </a>
+          <label style={secondaryBtn}>
+            ↑ Restore
+            <input type="file" accept=".db,application/x-sqlite3" onChange={handleRestore} hidden />
+          </label>
+        </div>
       </div>
     </div>
   );
 }
+
+const secondaryBtn: React.CSSProperties = {
+  padding: '8px 14px',
+  borderRadius: 6,
+  border: '1px solid #cfd8dc',
+  background: '#fff',
+  color: '#1976d2',
+  fontSize: 13,
+  fontWeight: 500,
+  textDecoration: 'none',
+  cursor: 'pointer',
+  display: 'inline-flex',
+  alignItems: 'center',
+};
 
 const inputStyle: React.CSSProperties = {
   padding: '8px 12px',

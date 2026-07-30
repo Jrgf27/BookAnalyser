@@ -10,7 +10,7 @@ from app.config import get_settings
 from app.store.sqlite_store import SqliteChunkStore
 from app.store.session_store import SessionStore
 from app.ingest.jobs import JobRegistry
-from app.api import books, chunks, search, chat, sessions
+from app.api import books, chunks, search, chat, sessions, export, restore
 
 
 @asynccontextmanager
@@ -48,6 +48,8 @@ app.include_router(chunks.router)
 app.include_router(search.router)
 app.include_router(chat.router)
 app.include_router(sessions.router)
+app.include_router(export.router)
+app.include_router(restore.router)
 
 
 @app.get("/health")

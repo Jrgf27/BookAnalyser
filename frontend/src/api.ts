@@ -80,6 +80,25 @@ export function deleteBook(id: number): Promise<{ status: string }> {
   return json(`/books/${id}`, { method: 'DELETE' });
 }
 
+/** Restore a database from an uploaded .db snapshot (replaces current data). */
+async function importDb(path: string, file: File): Promise<{ status: string }> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text());
+  }
+  return res.json() as Promise<{ status: string }>;
+}
+
+export function importBooksDb(file: File): Promise<{ status: string }> {
+  return importDb('/import/books.db', file);
+}
+
+export function importSessionsDb(file: File): Promise<{ status: string }> {
+  return importDb('/import/sessions.db', file);
+}
+
 // ---- Sessions ----
 
 export function fetchSessions(): Promise<SessionMeta[]> {

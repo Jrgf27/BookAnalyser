@@ -68,6 +68,21 @@ class SqliteChunkStore:
         self.conn.execute("UPDATE books SET ready = 1 WHERE id = ?", (book_id,))
         self.conn.commit()
 
+    def restore_from(self, src_path: Path | str) -> None:
+        """Replace this database's contents with an uploaded snapshot.
+
+        Overwrites the live DB via SQLite's backup API, then re-applies the
+        schema migration (older exports may lack the `ready` column) and ensures
+        the vector table exists.
+        """
+        src = sqlite3.connect(str(src_path))
+        try:
+            src.backup(self.conn)  # atomically overwrite the live DB
+        finally:
+            src.close()
+        self._migrate()
+        self._ensure_vec_table()
+
     def cleanup_incomplete(self) -> int:
         """Drop books never marked ready — partials left by a crash/restart.
 

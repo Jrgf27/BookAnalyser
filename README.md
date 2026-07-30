@@ -23,6 +23,8 @@ React frontend with streaming responses and persistent chat history.
   ingestion runs as a background job with a live progress bar.
 - **Chapter outlines** — scope to a single book to browse its per-chapter
   summaries.
+- **Portable data** — download your book library and chat history as SQLite
+  files, and restore them later (or on another machine).
 
 ## Quick Start
 
@@ -107,6 +109,8 @@ book-assistant/
 | `GET` | `/chunks/{id}` | A chunk + surrounding context |
 | `POST` | `/chat/stream` | Session-backed chat over SSE |
 | `GET`/`POST`/`GET`/`PATCH`/`DELETE` | `/sessions[...]` | Session CRUD |
+| `GET` | `/export/{books,sessions}.db` | Download a DB snapshot |
+| `POST` | `/import/{books,sessions}.db` | Restore a DB from an upload |
 | `GET` | `/health` | Liveness check |
 
 ## Key Design Decisions
@@ -143,6 +147,10 @@ book-assistant/
 - **Resilient Azure client** — retry with exponential backoff + jitter on rate
   limits/timeouts/5xx; `temperature` is omitted by default because `gpt-5.1-chat`
   rejects any non-default value.
+- **Portable, consistent backups** — export/import serve a snapshot made with
+  SQLite's online backup API (not the raw file), so WAL-pending writes can't
+  produce a torn copy; import validates the file is SQLite with the expected
+  tables before a full-replace restore.
 - **Client-facing errors** — the frontend shows friendly messages (e.g. "this
   passage is no longer available" when its book was removed), never raw JSON.
 - **Same-origin, no CORS** — both the Vite dev server and the nginx build proxy
