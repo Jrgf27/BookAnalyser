@@ -57,10 +57,10 @@ export default function Sidebar({
               title="Download your chat history (sessions.db)"
               style={ghostBtn}
             >
-              ↓ Export
+              ↓ Download
             </a>
             <label title="Restore chat history from a sessions.db file" style={ghostBtn}>
-              ↑ Import
+              ↑ Restore
               <input type="file" accept=".db,application/x-sqlite3" onChange={handleImport} hidden />
             </label>
           </span>
