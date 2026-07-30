@@ -204,8 +204,8 @@ The Vite dev server proxies `/api` to the backend, mirroring the Docker setup.
 ### Tests
 
 ```bash
-# Backend (pytest)
-cd backend && PYTHONPATH=. python -m pytest
+# Backend (pytest) — requirements-dev.txt adds pytest on top of requirements.txt
+cd backend && pip install -r requirements-dev.txt && PYTHONPATH=. python -m pytest
 
 # Frontend (Vitest + Testing Library)
 cd frontend && npm test

@@ -1,0 +1,6 @@
+# Test/development dependencies. Runtime deps come from requirements.txt; this
+# keeps pytest out of the production image while giving CI and local dev what
+# they need to run the suite.
+-r requirements.txt
+
+pytest>=8,<10
