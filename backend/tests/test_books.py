@@ -9,11 +9,12 @@ from fastapi.testclient import TestClient
 import app.api.books as books_api
 import app.ingest.pipeline as pipeline
 from app.api.books import _slugify, _unique_key
-from app.api.deps import get_jobs, get_settings, get_store
+from app.api.deps import get_jobs, get_queue, get_settings, get_store
 from app.config import Settings
 from app.ingest.jobs import JobRegistry
 from app.ingest.parser import GutenbergParser
 from app.main import app
+from app.store.queue_store import IngestQueueStore
 from app.store.sqlite_store import SqliteChunkStore
 
 
@@ -23,6 +24,10 @@ def _settings() -> Settings:
 
 def _store(tmp_path) -> SqliteChunkStore:
     return SqliteChunkStore(tmp_path / "b.db", embedding_dim=8)
+
+
+def _queue(tmp_path) -> IngestQueueStore:
+    return IngestQueueStore(tmp_path / "queue.db")
 
 
 # ---- Parser ----
@@ -200,6 +205,7 @@ class TestBookEndpoints:
         app.dependency_overrides[get_store] = lambda: store
         app.dependency_overrides[get_settings] = lambda: _settings()
         app.dependency_overrides[get_jobs] = lambda: JobRegistry()
+        app.dependency_overrides[get_queue] = lambda: _queue(tmp_path)
         client = TestClient(app)
         try:
             resp = client.post(
@@ -220,6 +226,7 @@ class TestBookEndpoints:
         app.dependency_overrides[get_store] = lambda: store
         app.dependency_overrides[get_settings] = lambda: _settings()
         app.dependency_overrides[get_jobs] = lambda: jobs
+        app.dependency_overrides[get_queue] = lambda: _queue(tmp_path)
         client = TestClient(app)
         try:
             resp = client.post(
@@ -254,6 +261,7 @@ class TestBookEndpoints:
         app.dependency_overrides[get_store] = lambda: store
         app.dependency_overrides[get_settings] = lambda: _settings()
         app.dependency_overrides[get_jobs] = lambda: JobRegistry()
+        app.dependency_overrides[get_queue] = lambda: _queue(tmp_path)
         client = TestClient(app)
         try:
             # Same title/author, differing case + whitespace → still a duplicate.

@@ -13,11 +13,10 @@ import {
   renameSession,
   deleteSession,
   uploadBook,
-  fetchIngestJob,
+  fetchIngestJobs,
   importSessionsDb,
 } from './api';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 import ChatPane from './components/ChatPane';
 import Sidebar from './components/Sidebar';
 import SourceDrawer from './components/SourceDrawer';
@@ -45,9 +44,11 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [initialMessages, setInitialMessages] = useState<StoredMessage[]>([]);
   const [showBookManager, setShowBookManager] = useState(false);
-  // Ingestion job lives here (not in the modal) so its progress survives the
-  // modal being closed and reopened while a book is still ingesting.
-  const [ingestJob, setIngestJob] = useState<IngestJobStatus | null>(null);
+  // All in-flight (and just-finished) ingestions, polled from the server so the
+  // list includes jobs this client didn't start — notably the startup seed —
+  // not just the user's own upload. Lives here (not in the modal) so progress
+  // survives the modal being closed and reopened.
+  const [activeJobs, setActiveJobs] = useState<IngestJobStatus[]>([]);
   const [ingestError, setIngestError] = useState<string | null>(null);
   // Mount key for ChatPane. Changes only on explicit New-chat / session-select —
   // NOT when the server assigns an id mid-stream, so an in-flight turn survives.
@@ -57,39 +58,61 @@ export default function App() {
     fetchBooks().then(setBooks).catch(console.error);
   }, []);
 
-  // Upload + poll to completion. Returns whether it succeeded so the modal can
-  // clear its form; runs to completion regardless of whether the modal is open.
+  // Kick off an upload. Returns whether the request was accepted so the modal
+  // can clear its form; the shared poller (below) then tracks progress to
+  // completion — including this job — so we don't poll it separately here.
   const startIngest = useCallback(
     async (file: File, title: string, author: string): Promise<boolean> => {
       setIngestError(null);
-      let status: IngestJobStatus;
       try {
-        status = await uploadBook(file, title, author);
+        const status = await uploadBook(file, title, author);
+        // Show its progress bar immediately, before the next poll tick.
+        setActiveJobs((prev) => [
+          ...prev.filter((j) => j.id !== status.id),
+          status,
+        ]);
+        return true;
       } catch (err) {
         setIngestError(err instanceof Error ? err.message : 'Upload failed');
         return false;
       }
-      setIngestJob(status);
-      try {
-        while (status.status !== 'done' && status.status !== 'error') {
-          await sleep(800);
-          status = await fetchIngestJob(status.id);
-          setIngestJob(status);
-        }
-        if (status.status === 'error') {
-          throw new Error(status.error || 'Ingestion failed');
-        }
-        return true;
-      } catch (err) {
-        setIngestError(err instanceof Error ? err.message : 'Ingestion failed');
-        return false;
-      } finally {
-        setIngestJob(null);
-        refreshBooks();
-      }
     },
-    [refreshBooks],
+    [],
   );
+
+  // Poll active/recent ingestion jobs. Discovers jobs started elsewhere (the
+  // startup seed, another tab), drives every progress bar, surfaces failures,
+  // and refreshes the library whenever an ingestion finishes.
+  useEffect(() => {
+    let alive = true;
+    let prevActive = 0;
+    const tick = async () => {
+      try {
+        const jobs = await fetchIngestJobs();
+        if (!alive) return;
+        setActiveJobs(jobs);
+        const stillActive = jobs.filter(
+          (j) => j.status === 'queued' || j.status === 'running',
+        ).length;
+        if (stillActive < prevActive) refreshBooks(); // something completed
+        prevActive = stillActive;
+        const failed = jobs.find((j) => j.status === 'error');
+        if (failed) {
+          setIngestError(
+            `Ingestion of "${failed.title}" failed: ${failed.error ?? 'unknown error'}`,
+          );
+        }
+      } catch {
+        /* transient network/poll error — try again next tick */
+      }
+    };
+    tick();
+    const iv = setInterval(tick, 1200);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [refreshBooks]);
 
   const refreshSessions = useCallback(() => {
     fetchSessions().then(setSessions).catch(console.error);
@@ -241,7 +264,9 @@ export default function App() {
       {showBookManager && (
         <BookManager
           books={books}
-          job={ingestJob}
+          jobs={activeJobs.filter(
+            (j) => j.status === 'queued' || j.status === 'running',
+          )}
           error={ingestError}
           onUpload={startIngest}
           onClose={() => setShowBookManager(false)}

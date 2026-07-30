@@ -33,6 +33,29 @@ class TestJobRegistry:
         assert reg.get("missing") is None
         reg.update("missing", status="x")  # no-op, must not raise
 
+    def test_list_recent_includes_active_and_recent(self) -> None:
+        reg = JobRegistry()
+        running = reg.create("running")
+        reg.update(running.id, status="running")
+        just_done = reg.create("just_done")
+        reg.update(just_done.id, status="done")
+        stale = reg.create("stale")
+        reg.update(stale.id, status="done")
+        # Backdate the stale job outside the recency window.
+        reg.get(stale.id).updated_at = 0.0
+
+        ids = {j.id for j in reg.list_recent(window_seconds=60)}
+        assert running.id in ids       # in-flight: always listed
+        assert just_done.id in ids     # finished recently: listed
+        assert stale.id not in ids     # finished long ago: dropped
+
+    def test_list_recent_sorted_oldest_first(self) -> None:
+        reg = JobRegistry()
+        a = reg.create("a")
+        b = reg.create("b")
+        recent = reg.list_recent()
+        assert [j.id for j in recent] == [a.id, b.id]
+
     def test_prunes_old_finished_jobs(self) -> None:
         reg = JobRegistry()
         ids = []

@@ -76,6 +76,14 @@ export function fetchIngestJob(jobId: string): Promise<IngestJobStatus> {
   return json(`/books/jobs/${jobId}`);
 }
 
+/**
+ * Active + recently-finished ingestion jobs. Lets the UI discover ingestions it
+ * didn't start (e.g. the server's startup seed) and show their progress.
+ */
+export function fetchIngestJobs(): Promise<IngestJobStatus[]> {
+  return json('/books/jobs');
+}
+
 export function deleteBook(id: number): Promise<{ status: string }> {
   return json(`/books/${id}`, { method: 'DELETE' });
 }

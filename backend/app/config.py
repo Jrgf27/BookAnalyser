@@ -25,7 +25,16 @@ class Settings(BaseSettings):
     # Durable chat history — deliberately a separate file from the rebuildable
     # book cache (books.db), so re-ingesting books never wipes user sessions.
     sessions_database_path: Path = Path("data/sessions.db")
+    # Durable ingestion backlog — a dedicated file so its writes never contend
+    # with the chunk-store connection, and so it survives a books.db rebuild.
+    ingest_queue_database_path: Path = Path("data/ingest_queue.db")
     raw_data_dir: Path = Path("data/raw")
+
+    # ---- Seeding ----
+    # On startup, if the library is empty, ingest the bundled sample books from
+    # raw_data_dir in the background so the app is usable out of the box. Runs
+    # once (skipped when any book already exists); set to false to disable.
+    seed_on_start: bool = True
 
     # ---- Logging ----
     log_level: str = "INFO"

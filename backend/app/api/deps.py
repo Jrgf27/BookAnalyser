@@ -19,5 +19,9 @@ def get_jobs(request: Request):
     return request.app.state.ingest_jobs
 
 
+def get_queue(request: Request):
+    return request.app.state.ingest_queue
+
+
 def get_settings(request: Request) -> Settings:
     return request.app.state.settings  # type: ignore[no-any-return]

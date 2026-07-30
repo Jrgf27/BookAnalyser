@@ -35,14 +35,30 @@ class JobRegistry:
     def __init__(self) -> None:
         self._jobs: dict[str, IngestJob] = {}
 
-    def create(self, title: str) -> IngestJob:
-        job = IngestJob(id=uuid.uuid4().hex, title=title)
+    def create(self, title: str, job_id: str | None = None) -> IngestJob:
+        job = IngestJob(id=job_id or uuid.uuid4().hex, title=title)
         self._jobs[job.id] = job
         self._prune()
         return job
 
     def get(self, job_id: str) -> IngestJob | None:
         return self._jobs.get(job_id)
+
+    def list_recent(self, window_seconds: float = 60.0) -> list[IngestJob]:
+        """Jobs a client should currently care about, oldest first.
+
+        Includes everything still in flight (``queued``/``running``) plus anything
+        that finished within ``window_seconds`` — so a client that wasn't the one
+        to start a job (e.g. the startup seed, or another browser tab) can still
+        discover it, show progress, and surface a recent success/failure.
+        """
+        cutoff = time.time() - window_seconds
+        recent = [
+            j for j in self._jobs.values()
+            if j.status in ("queued", "running") or j.updated_at >= cutoff
+        ]
+        recent.sort(key=lambda j: j.created_at)
+        return recent
 
     def update(self, job_id: str, **fields: Any) -> None:
         job = self._jobs.get(job_id)

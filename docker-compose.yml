@@ -1,8 +1,14 @@
 services:
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
+    # Not published to the host: the frontend reaches the backend over the
+    # Compose network by service name (see frontend/nginx.conf → http://backend:8000),
+    # and the browser only ever talks to the frontend origin. `expose` is
+    # documentation only — Compose networking already allows inter-service traffic
+    # on any port. To hit the API directly from the host for debugging, add a
+    # `ports: ["8000:8000"]` mapping (or use `docker compose port backend 8000`).
+    expose:
+      - "8000"
     env_file: .env
     volumes:
       - ./data:/app/data

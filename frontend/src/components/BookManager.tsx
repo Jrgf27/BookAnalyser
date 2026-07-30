@@ -4,7 +4,7 @@ import { deleteBook, importBooksDb } from '../api';
 
 interface Props {
   books: BookMeta[];
-  job: IngestJobStatus | null;   // active ingestion, owned by App
+  jobs: IngestJobStatus[];       // in-flight ingestions (incl. seeds), owned by App
   error: string | null;          // ingestion error, owned by App
   onUpload: (file: File, title: string, author: string) => Promise<boolean>;
   onClose: () => void;
@@ -13,7 +13,7 @@ interface Props {
 
 export default function BookManager({
   books,
-  job,
+  jobs,
   error,
   onUpload,
   onClose,
@@ -25,12 +25,14 @@ export default function BookManager({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // An ingestion is in flight (started here or in a previous open of the modal).
-  const busy = job !== null;
-  const canUpload = !!file && !!title.trim() && !busy;
+  // An ingestion is in flight (this user's upload, or the startup seed). New
+  // uploads are still allowed — the backend serializes them behind a lock, so
+  // they just queue — but destructive actions (delete) wait until it's idle.
+  const busy = jobs.length > 0;
+  const canUpload = !!file && !!title.trim();
 
   const handleUpload = async () => {
-    if (!file || !title.trim() || busy) return;
+    if (!file || !title.trim()) return;
     const ok = await onUpload(file, title.trim(), author.trim());
     if (ok) {
       setTitle('');
@@ -168,11 +170,14 @@ export default function BookManager({
               alignSelf: 'flex-start',
             }}
           >
-            {busy ? 'Ingesting…' : 'Upload & ingest'}
+            {busy ? 'Add to queue' : 'Upload & ingest'}
           </button>
 
-          {job && (
-            <div style={{ marginTop: 8 }}>
+          {jobs.map((job) => (
+            <div key={job.id} style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#444', marginBottom: 2 }}>
+                {job.title}
+              </div>
               <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden' }}>
                 <div
                   style={{
@@ -184,11 +189,12 @@ export default function BookManager({
                 />
               </div>
               <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
-                {job.stage ? `${job.stage} — ` : ''}
-                {job.detail || 'Starting…'} ({Math.round(job.progress * 100)}%)
+                {job.status === 'queued'
+                  ? 'Queued — waiting for another ingestion to finish'
+                  : `${job.stage ? `${job.stage} — ` : ''}${job.detail || 'Starting…'} (${Math.round(job.progress * 100)}%)`}
               </div>
             </div>
-          )}
+          ))}
         </div>
 
         {/* Backup / restore */}

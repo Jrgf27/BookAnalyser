@@ -37,14 +37,23 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open **http://localhost:5173** (the API is on `http://localhost:8000`).
+Open **http://localhost:5173**. The backend isn't published to the host — the
+frontend proxies `/api` to it over the Compose network — so there's nothing to
+open on `:8000`. To reach the API directly for debugging, add a
+`ports: ["8000:8000"]` mapping to the `backend` service in `docker-compose.yml`.
+(In local dev without Docker it still runs on `http://localhost:8000`.)
 
-The library starts **empty**. Add books from the UI: click **Manage books**,
-enter a title/author, and upload an HTML file. Ingestion (parse → chunk → embed
-→ summarize) runs in the background with a progress bar, and the book appears in
-the library once it's ready. Two sample books are included under `data/raw/`
-(Little Women and Pride & Prejudice, from Project Gutenberg) — upload them to get
-started.
+On first boot the two bundled sample books (Little Women and Pride & Prejudice,
+from Project Gutenberg, under `data/raw/`) are **ingested automatically** in the
+background — you'll see them appear with a progress bar and can start chatting
+once they're ready. This runs only when the library is empty, so it won't
+duplicate anything or re-run on later starts. Disable it with `SEED_ON_START=false`
+to begin with an empty library.
+
+To add more books, click **Manage books**, enter a title/author, and upload an
+HTML file. Ingestion (parse → chunk → embed → summarize) runs in the background
+with a progress bar, and the book appears in the library once it's ready. Only
+HTML uploads are accepted (see below).
 
 ### Configuration
 
@@ -88,9 +97,10 @@ book-assistant/
 │       └── llm/             # Azure OpenAI clients (retry, streaming, embeddings)
 ├── frontend/                # React + Vite (chat, sidebar, book manager, outline)
 ├── data/
-│   ├── raw/                 # Sample HTML books to upload via the UI
+│   ├── raw/                 # Sample HTML books (auto-seeded on first boot)
 │   ├── books.db             # Book cache (not committed, built from uploads)
-│   └── sessions.db          # Durable chat history (not committed, runtime data)
+│   ├── sessions.db          # Durable chat history (not committed, runtime data)
+│   └── ingest_queue.db      # Durable ingestion backlog (not committed, runtime)
 ├── eval/                    # Retrieval + faithfulness evaluation harness
 └── scripts/                 # Utility scripts (Azure connectivity probe)
 ```
@@ -101,7 +111,8 @@ book-assistant/
 | --- | --- | --- |
 | `GET` | `/books` | List ready books |
 | `POST` | `/books` | Upload an HTML book → returns an ingestion job |
-| `GET` | `/books/jobs/{id}` | Poll ingestion progress |
+| `GET` | `/books/jobs` | List active + recently-finished ingestions (incl. seed jobs) |
+| `GET` | `/books/jobs/{id}` | Poll one ingestion's progress |
 | `DELETE` | `/books/{id}` | Remove a book |
 | `GET` | `/books/{id}/outline` | Chapter titles + summaries |
 | `POST` | `/search` | Hybrid passage search |
@@ -115,11 +126,30 @@ book-assistant/
 
 ## Key Design Decisions
 
-- **Two SQLite files, two lifecycles** — `books.db` is a rebuildable cache;
-  `sessions.db` holds durable chat history, so removing/re-adding books never
-  wipes a user's conversations.
+- **Separate SQLite files, separate lifecycles** — `books.db` is a rebuildable
+  cache; `sessions.db` holds durable chat history (so removing/re-adding books
+  never wipes conversations); `ingest_queue.db` is a durable backlog of pending
+  ingestions. Each has its own connection, which also keeps the queue's writes
+  off the chunk-store connection.
+- **Durable ingestion queue** — an upload is written to `ingest_queue.db` (raw
+  HTML payload + coarse status) *before* ingesting, and its row is deleted only
+  when the book finishes (success or failure). So a book that's still queued or
+  mid-ingest when the server stops is re-scheduled automatically on the next
+  boot — nothing pending is lost. A row whose book already exists (the process
+  died after the book committed but before the row was cleared) is detected and
+  dropped, so resume never creates a duplicate. Live progress/stage detail stays
+  in memory (the `JobRegistry`); only the minimal durable facts are persisted, so
+  the queue takes just a few writes per book.
 - **Sessions are server-owned** — the server loads history from the DB and is the
   source of truth, rather than trusting the client to replay transcripts.
+- **Auto-seed on first boot** — if the library is empty at startup, the bundled
+  sample books are ingested via the normal background pipeline (so they show up
+  with progress bars). It's idempotent — guarded by an empty-library check, so it
+  never duplicates books or re-runs on a warm database — scheduling-only so it
+  never blocks startup or the healthcheck, and toggleable via `SEED_ON_START`.
+  Seeding at container **startup** rather than image-build time is deliberate:
+  embedding/summarization need Azure credentials and network at run time, which
+  shouldn't be baked into an image layer.
 - **Background, non-blocking ingestion** — uploads run as a tracked job that
   reports progress (parsing → embedding → summarizing); the CPU/DB-bound stages
   run off the event loop via `asyncio.to_thread`, so a large upload never blocks
@@ -199,9 +229,21 @@ texts (e.g. Beth's death → LW ch.40, Darcy's first proposal → P&P ch.34).
 ## Assumptions & Trade-offs
 
 - **Single-user, local tool** — no authentication; sessions and books are global.
-  Ingestion jobs are tracked in memory, so in-flight progress is lost on restart
-  (the ingested book itself is persisted).
-- **One shared SQLite connection** — fine for a read-mostly local workload; a
-  server deployment would want a connection pool.
-- **HTML input only** — uploads accept HTML; non-Gutenberg HTML still ingests via
-  the single-chapter fallback.
+  Live ingestion *progress* (percentage/stage) is in memory, so a restart resets
+  the progress bar — but the queued work itself is durable (`ingest_queue.db`) and
+  resumes automatically, and finished books are persisted.
+- **One shared SQLite connection, serialized writes** — fine for a read-mostly
+  local workload; a server deployment would want a connection pool. Because the
+  connection isn't safe for concurrent writes across threads, all ingestion (the
+  first-boot seed and any uploads) runs behind a single process-wide lock: a book
+  uploaded while the samples are still seeding simply queues (shown as "waiting")
+  and ingests as soon as the current one finishes, rather than racing the
+  connection.
+- **HTML input only (by design)** — uploads accept HTML (`.html`/`.htm`, or
+  `text/html`) and nothing else. This is a deliberate constraint: the provided
+  dataset was supplied as HTML, so the ingestion pipeline and chapter parser are
+  built around that format. The UI file picker is restricted to HTML and the API
+  rejects any other type with a clear `400` (`"Only HTML files (.html/.htm) are
+  supported."`), so non-HTML uploads fail fast and explicitly rather than
+  ingesting incorrectly. Non-Gutenberg HTML still ingests via the single-chapter
+  fallback.

@@ -23,6 +23,11 @@ data/sessions.db
 data/sessions.db-shm
 data/sessions.db-journal
 data/sessions.db-wal
+# Durable ingestion queue (runtime backlog of pending uploads)
+data/ingest_queue.db
+data/ingest_queue.db-shm
+data/ingest_queue.db-journal
+data/ingest_queue.db-wal
 
 # ---------- Environment ----------
 .env
