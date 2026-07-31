@@ -83,6 +83,65 @@ def test_import_books_restores(tmp_path) -> None:
         store.close()
 
 
+def test_import_books_rejects_corrupt_db(tmp_path) -> None:
+    # Valid SQLite header + right tables, but the file is truncated → the
+    # integrity check must reject it before anything is overwritten.
+    snapshot = _books_snapshot(tmp_path)
+    corrupt = snapshot[: max(100, len(snapshot) // 3)]
+
+    store = SqliteChunkStore(tmp_path / "live.db", embedding_dim=8)
+    app.dependency_overrides[get_store] = lambda: store
+    client = TestClient(app)
+    try:
+        resp = client.post(
+            "/import/books.db",
+            files={"file": ("books.db", corrupt, "application/x-sqlite3")},
+        )
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+        store.close()
+
+
+def test_import_books_rolls_back_on_failed_restore(tmp_path, monkeypatch) -> None:
+    snapshot = _books_snapshot(tmp_path)
+    store = SqliteChunkStore(tmp_path / "live.db", embedding_dim=8)
+    # Seed original data that must survive a failed restore.
+    store.conn.execute(
+        "INSERT INTO books (title,author,key,word_count,chapter_count,ready) "
+        "VALUES ('Original','A','orig',1,1,1)"
+    )
+    store.conn.commit()
+
+    # Fail the forward restore, let the rollback (2nd call) run the real restore.
+    real_restore = store.restore_from
+    calls = {"n": 0}
+
+    def flaky(p):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated mid-restore failure")
+        return real_restore(p)
+
+    monkeypatch.setattr(store, "restore_from", flaky)
+
+    app.dependency_overrides[get_store] = lambda: store
+    client = TestClient(app)
+    try:
+        resp = client.post(
+            "/import/books.db",
+            files={"file": ("books.db", snapshot, "application/x-sqlite3")},
+        )
+        assert resp.status_code == 500
+        assert calls["n"] == 2  # forward attempt + rollback both happened
+        # Rolled back → the original library is intact, not the failed import.
+        titles = [r["title"] for r in store.conn.execute("SELECT title FROM books")]
+        assert titles == ["Original"]
+    finally:
+        app.dependency_overrides.clear()
+        store.close()
+
+
 def test_import_sessions_restores(tmp_path) -> None:
     src = SessionStore(tmp_path / "s_src.db")
     src.create_session(title="Restored chat")

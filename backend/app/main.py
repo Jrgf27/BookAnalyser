@@ -2,7 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 
@@ -15,7 +15,7 @@ from app.api import books, chunks, search, chat, sessions, export, restore
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Open the stores on startup, close on shutdown."""
     settings = get_settings()
     store = SqliteChunkStore(settings.database_path, embedding_dim=settings.embedding_dimensions)

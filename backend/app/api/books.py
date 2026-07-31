@@ -108,9 +108,18 @@ async def _run_ingest_job(
                 job_id, status="done", stage="done", progress=1.0,
                 book_id=book_id, detail="Complete",
             )
-        except Exception as exc:  # report failure back to the client
+        except ValueError as exc:
+            # Deliberate, user-facing validation errors (e.g. "No text could be
+            # parsed from the provided HTML.") are safe and useful to show.
             logger.exception("Ingest job %s failed", job_id)
             jobs.update(job_id, status="error", error=str(exc), detail="Failed")
+        except Exception:  # unexpected failure — don't leak internals to the client
+            logger.exception("Ingest job %s failed", job_id)
+            jobs.update(
+                job_id, status="error",
+                error="Ingestion failed due to an internal error.",
+                detail="Failed",
+            )
         finally:
             # Terminal either way: drop the durable row so it isn't resumed. A
             # failed book is cleaned up by ingest itself; the user can re-upload.

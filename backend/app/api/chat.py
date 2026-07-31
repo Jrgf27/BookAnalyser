@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -74,9 +74,15 @@ async def chat_stream(
                 if ev.get("type") == "done":
                     session_store.add_message(session_id, "assistant", ev["answer"])
                 yield sse(ev)
-        except Exception as exc:  # surface failures to the client as an event
+        except Exception:  # surface a failure to the client without leaking internals
+            # Full detail (type, message, traceback) goes to the server log only;
+            # the client gets a generic message so exceptions can't disclose
+            # internal paths, dependency errors, or credentials.
             logger.exception("Streaming agent failed")
-            yield sse({"type": "error", "message": str(exc)})
+            yield sse({
+                "type": "error",
+                "message": "The assistant hit an internal error. Please try again.",
+            })
 
     return StreamingResponse(
         event_source(),
