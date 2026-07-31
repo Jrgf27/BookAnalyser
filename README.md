@@ -43,6 +43,11 @@ open on `:8000`. To reach the API directly for debugging, add a
 `ports: ["8000:8000"]` mapping to the `backend` service in `docker-compose.yml`.
 (In local dev without Docker it still runs on `http://localhost:8000`.)
 
+> The backend container runs as a **non-root** user (uid 1000) and bind-mounts
+> `./data`. That matches the typical host user, but if yours isn't uid 1000 and
+> you hit a `readonly database` error, either `sudo chown -R 1000:1000 data/` or
+> set `user: "${UID}:${GID}"` on the `backend` service.
+
 On first boot the two bundled sample books (Little Women and Pride & Prejudice,
 from Project Gutenberg, under `data/raw/`) are **ingested automatically** in the
 background — you'll see them appear with a progress bar and can start chatting
@@ -179,8 +184,11 @@ book-assistant/
   rejects any non-default value.
 - **Portable, consistent backups** — export/import serve a snapshot made with
   SQLite's online backup API (not the raw file), so WAL-pending writes can't
-  produce a torn copy; import validates the file is SQLite with the expected
-  tables before a full-replace restore.
+  produce a torn copy. Import is **atomic and reversible**: the upload is
+  validated (SQLite header, expected tables, and a `PRAGMA quick_check`
+  integrity pass) *and* the live DB is snapshotted before the overwrite, so a
+  corrupt upload or a mid-restore failure rolls back to the prior data instead
+  of leaving it half-replaced.
 - **Client-facing errors** — the frontend shows friendly messages (e.g. "this
   passage is no longer available" when its book was removed), never raw JSON.
 - **Same-origin, no CORS** — both the Vite dev server and the nginx build proxy
@@ -211,12 +219,17 @@ cd backend && pip install -r requirements-dev.txt && PYTHONPATH=. python -m pyte
 cd frontend && npm test
 ```
 
-The backend suite covers parsing, chunking, the store (incl. schema migration +
-crash cleanup), citation validation, scope enforcement, sessions, book
-upload/delete, background ingestion with progress reporting, ingestion
-serialization, and the durable queue (persistence, terminal cleanup, resume).
-The frontend suite covers the API client and the book-manager queue UI (per-job
-progress, queued state, upload-while-busy, delete gating).
+The backend suite covers parsing, chunking, hybrid retrieval (RRF ranking, book
+scoping, vector-only fallback), the agent tool dispatch (search/get_context/
+unknown-tool, budget truncation), the store (incl. schema migration + crash
+cleanup), citation validation, scope enforcement, sessions, book upload/delete,
+background ingestion with progress reporting, ingestion serialization, the
+durable queue (persistence, terminal cleanup, resume), the Azure retry/backoff
+logic, HTTP endpoint error paths (404/422 across sessions, chunks, outline, chat
+validation), and import safety (integrity rejection + snapshot rollback). Both
+happy and error paths are exercised throughout. The frontend suite covers the
+API client and the book-manager queue UI (per-job progress, queued state,
+upload-while-busy, delete gating).
 
 ### Continuous integration
 
@@ -266,3 +279,30 @@ texts (e.g. Beth's death → LW ch.40, Darcy's first proposal → P&P ch.34).
   supported."`), so non-HTML uploads fail fast and explicitly rather than
   ingesting incorrectly. Non-Gutenberg HTML still ingests via the single-chapter
   fallback.
+
+### Security posture
+
+This is a single-user local tool, so the threat model is modest — but the code
+is defensive where it's cheap to be:
+
+- **No authentication (by design).** Every endpoint is unauthenticated, including
+  destructive ones (delete book/session, DB import). The backend port is not
+  published to the host — the browser only talks to the frontend, which proxies
+  `/api` over the Compose network — so **don't expose `:8000` to an untrusted
+  network without adding auth first.**
+- **Parameterized SQL everywhere** — all user/LLM-supplied values reach SQLite
+  through bound `?` parameters; the only dynamically-built SQL interpolates
+  placeholder counts and integers, never user data. Uploaded HTML is parsed,
+  never executed, and stored as data.
+- **No internal disclosure** — client-facing errors are generic; full exception
+  detail (type, message, traceback) goes only to the server log.
+- **Prompt-injection resistance** — retrieved book text is treated as untrusted
+  data: the system prompt tells the agent never to obey instructions embedded in
+  passages, and the loop strips any citation marker the model didn't actually
+  retrieve, so a malicious passage can't induce a fabricated citation.
+- **Hardened container** — the backend image is multi-stage (no compilers in the
+  runtime layer) and runs as a non-root user.
+- **Known trade-off** — uploads aren't size-capped (`client_max_body_size 0` in
+  nginx, to allow large `.db` restores), so a hostile large upload could exhaust
+  memory. Acceptable for a local single-user tool; a shared deployment should set
+  a cap.
