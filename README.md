@@ -228,13 +228,17 @@ and cancellation of superseded runs.
 
 ## Evaluation
 
+Both modes hit a running backend at `http://localhost:8000`, so start the server
+first (see [Development](#development)) and pass `--base-url` if it's elsewhere.
+
 ```bash
 # Retrieval hit-rate @k (needs only the embedding model)
 python eval/run.py
 
 # End-to-end citation faithfulness: asks the agent, then verifies every cited
 # chunk exists, matches its marker's book/chapter, and lands in an expected
-# chapter (needs the chat model and the sample books uploaded via the UI)
+# chapter (needs the chat model and the sample books ingested — they're
+# auto-seeded on first boot, or add them via the UI)
 python eval/run.py --mode faithfulness
 ```
 

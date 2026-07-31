@@ -69,11 +69,18 @@ def load_questions(path: Path) -> list[dict]:
 
 
 def _resolve_book_id(client: httpx.Client, book_key: str | None) -> int | None:
+    """Map a question's ``book_key`` to a live book id.
+
+    Matches on the ingested slug key (the source of truth, e.g. ``littlewomen``),
+    falling back to a title prefix. Warns on an unresolved non-null key so a stale
+    key silently scoping to "all books" doesn't quietly skew the metric.
+    """
     if not book_key:
         return None
     for b in client.get("/books").json():
         if b.get("key") == book_key or b["title"].lower().startswith(book_key):
             return b["id"]
+    print(f"  WARN  book_key {book_key!r} matched no book — scoping to all books")
     return None
 
 
