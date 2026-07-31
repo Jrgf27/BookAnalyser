@@ -133,6 +133,65 @@ class TestSqliteChunkStore:
         assert matrix.shape == (1, 3072)
 
 
+class TestHybridSearch:
+    """Exercises the RRF-fused vec0 + FTS5 retrieval path end to end."""
+
+    def _seed(self, tmp_path) -> SqliteChunkStore:
+        s = SqliteChunkStore(tmp_path / "search.db", embedding_dim=8)
+        s.conn.executescript(
+            "INSERT INTO books (id,title,author,key,word_count,chapter_count,ready) "
+            "VALUES (1,'A','X','a',1,1,1),(2,'B','Y','b',1,1,1);"
+            "INSERT INTO chapters (id,book_id,number,title,text,word_count) "
+            "VALUES (1,1,1,'A1','t',1),(2,2,1,'B1','t',1);"
+        )
+        s.conn.commit()
+        # Book 1: two chunks on orthogonal axes; Book 2: one chunk.
+        s.upsert(1, 1, [
+            {"text": "Elizabeth danced with Darcy at the ball",
+             "char_start": 0, "char_end": 39, "chapter_number": 1, "token_count": 8},
+            {"text": "the ship sailed across the wide ocean",
+             "char_start": 40, "char_end": 77, "chapter_number": 1, "token_count": 8},
+        ], [[1, 0, 0, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0, 0, 0]])
+        s.upsert(2, 2, [
+            {"text": "whales swim deep in the cold sea",
+             "char_start": 0, "char_end": 32, "chapter_number": 1, "token_count": 7},
+        ], [[0, 0, 1, 0, 0, 0, 0, 0]])
+        return s
+
+    def test_ranks_semantic_and_keyword_match_first(self, tmp_path) -> None:
+        s = self._seed(tmp_path)
+        # Vector aligned with the Elizabeth/Darcy chunk *and* keyword overlap.
+        results = s.search(
+            [1, 0, 0, 0, 0, 0, 0, 0], query_text="Elizabeth Darcy ball", k=3
+        )
+        assert results, "expected at least one result"
+        assert "Elizabeth" in results[0]["text"]
+        s.close()
+
+    def test_book_id_filter_excludes_other_books(self, tmp_path) -> None:
+        s = self._seed(tmp_path)
+        # Even with a query vector pointing at book 2's chunk, the filter wins.
+        results = s.search(
+            [0, 0, 1, 0, 0, 0, 0, 0], query_text="whales sea", book_id=1, k=5
+        )
+        assert results
+        assert all(r["book_id"] == 1 for r in results)
+        s.close()
+
+    def test_vector_only_when_query_text_blank(self, tmp_path) -> None:
+        s = self._seed(tmp_path)
+        # No usable FTS terms → vector arm alone still returns the nearest chunk.
+        results = s.search([0, 1, 0, 0, 0, 0, 0, 0], query_text="", k=2)
+        assert results
+        assert "ship sailed" in results[0]["text"]
+        s.close()
+
+    def test_empty_store_returns_empty(self, tmp_path) -> None:
+        s = SqliteChunkStore(tmp_path / "empty.db", embedding_dim=8)
+        assert s.search([1, 0, 0, 0, 0, 0, 0, 0], query_text="anything", k=5) == []
+        s.close()
+
+
 class TestReadiness:
     def _store(self, tmp_path) -> SqliteChunkStore:
         return SqliteChunkStore(tmp_path / "r.db", embedding_dim=8)

@@ -240,6 +240,102 @@ class TestCollectChunkIds:
         assert _collect_chunk_ids("list_books", [{"id": 1}]) == set()
 
 
+class TestDispatchTool:
+    """Direct dispatch coverage for the tools the agent can call."""
+
+    def _seed_chunked(self, tmp_path) -> SqliteChunkStore:
+        s = SqliteChunkStore(tmp_path / "d.db", embedding_dim=8)
+        s.conn.executescript(
+            "INSERT INTO books (id,title,author,key,word_count,chapter_count,ready) "
+            "VALUES (1,'Book A','X','a',1,1,1);"
+            "INSERT INTO chapters (id,book_id,number,title,text,word_count) "
+            "VALUES (1,1,1,'A-ch1','some chapter text here',4);"
+        )
+        s.conn.commit()
+        s.upsert(1, 1, [
+            {"text": "Elizabeth refused the proposal",
+             "char_start": 0, "char_end": 30, "chapter_number": 1, "token_count": 5},
+        ], [[1, 0, 0, 0, 0, 0, 0, 0]])
+        return s
+
+    def test_search_enriches_book_key_and_surfaces_ids(self, tmp_path, monkeypatch) -> None:
+        store = self._seed_chunked(tmp_path)
+
+        async def fake_embedding(text, settings):
+            return [1, 0, 0, 0, 0, 0, 0, 0]
+
+        import app.agent.tools as tools_mod
+        monkeypatch.setattr(tools_mod, "get_embedding", fake_embedding)
+
+        text, ids = asyncio.run(
+            dispatch_tool("search", {"query": "proposal"}, store, _settings(), budget=10_000)
+        )
+        rows = json.loads(text)
+        assert rows and rows[0]["book_key"] == "a"
+        assert "chunk_id" in rows[0]
+        # The surfaced ids let the loop validate any citation of this chunk.
+        assert ids == {rows[0]["chunk_id"]}
+        store.close()
+
+    def test_get_context_returns_chunk_and_id(self, tmp_path) -> None:
+        store = self._seed_chunked(tmp_path)
+        chunk_id = store.conn.execute("SELECT id FROM chunks LIMIT 1").fetchone()["id"]
+        text, ids = asyncio.run(
+            dispatch_tool("get_context", {"chunk_id": chunk_id}, store, _settings(), budget=10_000)
+        )
+        assert json.loads(text)["id"] == chunk_id
+        assert ids == {chunk_id}
+        store.close()
+
+    def test_get_context_missing_chunk_reports_error(self, tmp_path) -> None:
+        store = self._seed_chunked(tmp_path)
+        text, ids = asyncio.run(
+            dispatch_tool("get_context", {"chunk_id": 99999}, store, _settings(), budget=10_000)
+        )
+        assert "error" in json.loads(text)
+        assert ids == set()  # nothing surfaced → no citation would validate
+        store.close()
+
+    def test_unknown_tool_reports_error(self, tmp_path) -> None:
+        store = _seed_two_books(tmp_path)
+        text, ids = asyncio.run(
+            dispatch_tool("frobnicate", {}, store, _settings(), budget=10_000)
+        )
+        assert "Unknown tool" in json.loads(text)["error"]
+        assert ids == set()
+        store.close()
+
+    def test_list_books_hides_unready(self, tmp_path) -> None:
+        store = _seed_two_books(tmp_path)  # both ready by default? insert lacks ready col
+        # Mark one book not-ready and confirm list_books omits it.
+        store.conn.execute("UPDATE books SET ready = 1 WHERE id = 1")
+        store.conn.execute("UPDATE books SET ready = 0 WHERE id = 2")
+        store.conn.commit()
+        text, ids = asyncio.run(
+            dispatch_tool("list_books", {}, store, _settings(), budget=10_000)
+        )
+        titles = [b["title"] for b in json.loads(text)]
+        assert titles == ["Book A"]
+        assert ids == set()  # metadata tool surfaces no chunk ids
+        store.close()
+
+    def test_budget_truncates_oversized_result(self, tmp_path, monkeypatch) -> None:
+        store = self._seed_chunked(tmp_path)
+
+        async def fake_embedding(text, settings):
+            return [1, 0, 0, 0, 0, 0, 0, 0]
+
+        import app.agent.tools as tools_mod
+        monkeypatch.setattr(tools_mod, "get_embedding", fake_embedding)
+
+        text, _ = asyncio.run(
+            dispatch_tool("search", {"query": "proposal"}, store, _settings(), budget=20)
+        )
+        assert text.endswith("…[truncated]")
+        assert len(text) <= 20 + len("…[truncated]")
+        store.close()
+
+
 class TestSameRegion:
     def test_overlapping_same_chapter(self) -> None:
         a = {"chapter_id": 1, "char_start": 100}

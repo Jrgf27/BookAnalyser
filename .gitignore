@@ -13,7 +13,7 @@ node_modules/
 frontend/dist/
 
 # ---------- Data ----------
-# Built artifact — rebuild via: python -m app.ingest
+# Built artifact — rebuilt from uploads / first-boot seed at runtime.
 data/books.db
 data/books.db-shm
 data/books.db-journal
